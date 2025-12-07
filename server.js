@@ -29,11 +29,21 @@ function shuffleArray(array) {
 }
 
 function createNewGameState(adminId, adminName) {
-    // 1. Clone the master list
-    let roomPlayers = JSON.parse(JSON.stringify(initialPlayers));
+    // 1. Get fresh copy
+    let allPlayers = JSON.parse(JSON.stringify(initialPlayers));
     
-    // 2. SHUFFLE THE DECK (Randomize Order)
-    shuffleArray(roomPlayers);
+    // 2. SEPARATE POOLS based on your new 'marquee' column
+    const marqueeSet = allPlayers.filter(p => p.marquee === true);
+    const regularSet = allPlayers.filter(p => p.marquee !== true);
+
+    // 3. SHUFFLE EACH POOL INDEPENDENTLY
+    // This ensures Marquee players are random among themselves, 
+    // and Regular players are random among themselves.
+    shuffleArray(marqueeSet);
+    shuffleArray(regularSet);
+
+    // 4. COMBINE (Marquee First -> Then Regular)
+    const sortedList = [...marqueeSet, ...regularSet];
 
     return {
         code: null,
@@ -53,7 +63,7 @@ function createNewGameState(adminId, adminName) {
             } 
         },
         teams: {},
-        players: roomPlayers, // Use the shuffled list
+        players: sortedList, // Use the custom sorted list
         current_player_index: -1,
         current_bid: 0,
         current_top_bidder: null,
@@ -233,6 +243,36 @@ io.on('connection', (socket) => {
             room.status = 'AUCTION';
             io.to(room.code).emit('state_update', room);
         }
+    });
+    // --- ADMIN: KICK USER ---
+    socket.on('admin_kick_user', (targetUserId) => {
+        const room = ROOMS[socket.roomCode];
+        // Validation: Room exists, Requester is Admin, Target is NOT Admin
+        if (!room || !room.users[socket.id]?.is_admin || targetUserId === socket.id) return;
+
+        console.log(`Kicking user: ${targetUserId}`);
+
+        // 1. Notify the target (so their UI resets)
+        io.to(targetUserId).emit('kicked_from_room');
+
+        // 2. Remove from Teams (Free up the team they claimed)
+        if (room.teams[targetUserId]) {
+            delete room.teams[targetUserId];
+        }
+
+        // 3. Remove from Users list
+        if (room.users[targetUserId]) {
+            delete room.users[targetUserId];
+        }
+
+        // 4. Force socket to leave channel (Optional but good practice)
+        const targetSocket = io.sockets.sockets.get(targetUserId);
+        if (targetSocket) {
+            targetSocket.leave(socket.roomCode);
+        }
+
+        // 5. Broadcast update to remaining users
+        io.to(socket.roomCode).emit('state_update', room);
     });
 
     socket.on('admin_start_timer', () => {
