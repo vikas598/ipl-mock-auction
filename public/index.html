@@ -1,0 +1,336 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>IPL Auction Live</title>
+    <link href="https://fonts.googleapis.com/css2?family=Oswald:wght@400;700&family=Inter:wght@400;600;800&display=swap" rel="stylesheet">
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script crossorigin src="https://unpkg.com/react@18/umd/react.development.js"></script>
+    <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <script src="/socket.io/socket.io.js"></script>
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    fontFamily: { sans: ['Inter', 'sans-serif'], display: ['Oswald', 'sans-serif'] },
+                    colors: { ipl: { gold: '#fbbf24', blue: '#1e3a8a' } }
+                }
+            }
+        }
+    </script>
+    <style>
+        body { background-color: #0b0f19; color: white; }
+        .glass-panel { background: rgba(30, 41, 59, 0.8); backdrop-filter: blur(10px); border: 1px solid rgba(255, 255, 255, 0.1); }
+        .no-scrollbar::-webkit-scrollbar { display: none; }
+    </style>
+</head>
+<body>
+    <div id="root"></div>
+
+    <script type="text/babel">
+        const socket = io();
+        const formatCurrency = (val) => val >= 10000000 ? `₹${(val/10000000).toFixed(2)} Cr` : (val > 0 ? `₹${(val/100000).toFixed(2)} L` : '-');
+
+        // --- ONLINE LOGO LINKS ---
+        // No local files needed. These load directly from the internet.
+        const TEAM_LOGOS = {
+            'CSK': 'https://upload.wikimedia.org/wikipedia/en/2/2b/Chennai_Super_Kings_Logo.svg',
+            'MI': 'https://upload.wikimedia.org/wikipedia/en/c/cd/Mumbai_Indians_Logo.svg',
+            'RCB': 'https://upload.wikimedia.org/wikipedia/en/thumb/2/2a/Royal_Challengers_Bangalore_2020.svg/1200px-Royal_Challengers_Bangalore_2020.svg.png',
+            'KKR': 'https://upload.wikimedia.org/wikipedia/en/4/4c/Kolkata_Knight_Riders_Logo.svg',
+            'SRH': 'https://upload.wikimedia.org/wikipedia/en/8/81/Sunrisers_Hyderabad.svg',
+            'RR': 'https://upload.wikimedia.org/wikipedia/en/6/60/Rajasthan_Royals_Logo.svg',
+            'DC': 'https://upload.wikimedia.org/wikipedia/en/f/f8/Delhi_Capitals_Logo.svg',
+            'PBKS': 'https://upload.wikimedia.org/wikipedia/en/d/d4/Punjab_Kings_Logo.svg',
+            'LSG': 'https://upload.wikimedia.org/wikipedia/en/a/a9/Lucknow_Super_Giants_IPL_Logo.svg',
+            'GT': 'https://upload.wikimedia.org/wikipedia/en/d/d4/Gujarat_Titans_Logo_2022.svg'
+        };
+
+        const TeamLogo = ({ teamId, size = "h-12 w-12" }) => {
+            const url = TEAM_LOGOS[teamId];
+            if (!url) return <div className={`${size} bg-gray-700 rounded-full flex items-center justify-center`}>{teamId?.substring(0,2)}</div>;
+            return <img src={url} alt={teamId} className={`${size} object-contain drop-shadow-md hover:scale-110 transition-transform duration-300`} />;
+        };
+
+        const getSquadStats = (players = []) => ({
+            total: players.length,
+            indian: players.filter(p => p.nationality === 'Indian').length,
+            overseas: players.filter(p => p.nationality === 'Overseas').length,
+            batter: players.filter(p => p.role === 'Batsman').length,
+            bowler: players.filter(p => p.role === 'Bowler').length,
+            allRounder: players.filter(p => p.role === 'All-rounder').length,
+            wk: players.filter(p => p.role === 'Wicket-keeper').length
+        });
+
+        const NavBar = ({ currentTab, setTab }) => (
+            <div className="flex justify-center gap-4 py-2 bg-slate-800/50 border-b border-slate-700 shadow-lg relative z-20">
+                {['AUCTION', 'PLAYER POOL', 'SQUADS'].map(tab => (
+                    <button key={tab} onClick={() => setTab(tab)} className={`px-6 py-2 rounded-full font-bold text-sm transition-all ${currentTab === tab ? 'bg-ipl-gold text-black shadow-lg scale-105' : 'bg-slate-700 text-gray-400 hover:text-white'}`}>{tab}</button>
+                ))}
+            </div>
+        );
+
+        const PlayerPoolView = ({ players }) => {
+            const [search, setSearch] = React.useState("");
+            const [roleFilter, setRoleFilter] = React.useState("All");
+            const filteredPlayers = players.filter(p => p.name.toLowerCase().includes(search.toLowerCase()) && (roleFilter === "All" || p.role === roleFilter));
+            return (
+                <div className="p-4 max-w-6xl mx-auto h-full flex flex-col">
+                    <div className="flex gap-4 mb-4">
+                        <input className="flex-1 bg-slate-800 border border-slate-600 rounded px-3 py-2 text-sm" placeholder="Search Player..." value={search} onChange={e => setSearch(e.target.value)} />
+                        <select className="bg-slate-800 border border-slate-600 rounded px-3 py-2 text-sm" value={roleFilter} onChange={e => setRoleFilter(e.target.value)}>
+                            <option value="All">All Roles</option><option value="Batsman">Batsman</option><option value="Bowler">Bowler</option><option value="All-rounder">All-rounder</option><option value="Wicket-keeper">Wicket-keeper</option>
+                        </select>
+                    </div>
+                    <div className="flex-1 overflow-auto glass-panel rounded-xl">
+                        <table className="w-full text-left border-collapse">
+                            <thead className="bg-slate-800 text-gray-400 text-xs uppercase sticky top-0"><tr><th className="p-3">Name</th><th className="p-3">Role</th><th className="p-3">Base Price</th><th className="p-3">Status</th><th className="p-3">Price</th><th className="p-3">Buyer</th></tr></thead>
+                            <tbody className="text-sm divide-y divide-slate-700">
+                                {filteredPlayers.map(p => (
+                                    <tr key={p.id} className="hover:bg-slate-700/50">
+                                        <td className="p-3 font-bold">{p.name} {p.nationality === 'Overseas' && '✈️'}</td>
+                                        <td className="p-3 text-gray-400">{p.role}</td><td className="p-3 text-gray-300">{formatCurrency(p.base_price)}</td>
+                                        <td className="p-3">{p.status === 'SOLD' ? <span className="text-green-400 font-bold">SOLD</span> : p.status === 'UNSOLD' ? <span className="text-red-400 font-bold">UNSOLD</span> : <span className="text-gray-500">PENDING</span>}</td>
+                                        <td className="p-3 font-mono text-ipl-gold">{p.status === 'SOLD' ? formatCurrency(p.sold_price) : '-'}</td><td className="p-3 font-bold text-blue-400">{p.sold_to || '-'}</td>
+                                    </tr>
+                                ))}
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            );
+        };
+
+        const SquadView = ({ teams, currentUserId }) => {
+            const teamList = Object.values(teams);
+            const [selectedTeamId, setSelectedTeamId] = React.useState(teamList.find(t => t.id === currentUserId)?.id || teamList[0]?.id);
+            const selectedTeam = teams[selectedTeamId];
+            if (!selectedTeam) return <div className="p-10 text-center">No Teams Found</div>;
+            
+            const stats = getSquadStats(selectedTeam.players);
+
+            return (
+                <div className="p-4 max-w-6xl mx-auto h-full flex flex-col">
+                    <div className="flex overflow-x-auto gap-3 pb-4 mb-2 no-scrollbar">
+                        {teamList.map(t => (
+                            <button key={t.id} onClick={() => setSelectedTeamId(t.id)} className={`flex-shrink-0 px-4 py-3 rounded-lg border min-w-[140px] text-left transition-all flex items-center gap-3 ${selectedTeamId === t.id ? 'bg-blue-900 border-blue-500 shadow-lg' : 'bg-slate-800 border-slate-700 opacity-60'}`}>
+                                <TeamLogo teamId={t.name} size="h-8 w-8" />
+                                <div><p className="font-bold text-sm truncate">{t.name}</p><p className="text-xs text-gray-400">{t.players.length} Players</p></div>
+                            </button>
+                        ))}
+                    </div>
+                    <div className="glass-panel p-6 rounded-xl mb-4 flex justify-between items-end bg-gradient-to-r from-slate-800 to-slate-900 relative overflow-hidden">
+                        <div className="absolute -right-10 -bottom-10 opacity-10 pointer-events-none grayscale"><TeamLogo teamId={selectedTeam.name} size="h-64 w-64" /></div>
+                        <div className="relative z-10">
+                            <div className="flex items-center gap-4 mb-3">
+                                <TeamLogo teamId={selectedTeam.name} size="h-16 w-16" />
+                                <div><h2 className="text-3xl font-display font-bold text-white mb-1">{selectedTeam.name}</h2><p className="text-blue-400 text-sm">Owner: {selectedTeam.owner_name}</p></div>
+                            </div>
+                            <div className="flex gap-4 text-xs font-bold text-gray-300">
+                                <span className="flex items-center gap-1">🏏 <span className="text-white">{stats.batter}</span></span>
+                                <span className="flex items-center gap-1">⚾ <span className="text-white">{stats.bowler}</span></span>
+                                <span className="flex items-center gap-1">⚔️ <span className="text-white">{stats.allRounder}</span></span>
+                                <span className="flex items-center gap-1">🧤 <span className="text-white">{stats.wk}</span></span>
+                                <span className="w-px bg-gray-600 mx-1"></span>
+                                <span className="flex items-center gap-1">🇮🇳 <span className="text-white">{stats.indian}</span></span>
+                                <span className="flex items-center gap-1">✈️ <span className="text-white">{stats.overseas}</span></span>
+                            </div>
+                        </div>
+                        <div className="text-right relative z-10"><p className="text-xs uppercase text-gray-400">Purse</p><p className="text-4xl font-mono font-bold text-ipl-gold">{formatCurrency(selectedTeam.purse)}</p></div>
+                    </div>
+                    <div className="flex-1 overflow-auto glass-panel rounded-xl"><table className="w-full text-left border-collapse"><thead className="bg-slate-800 text-gray-400 text-xs uppercase sticky top-0"><tr><th className="p-3">Name</th><th className="p-3">Role</th><th className="p-3">Nat</th><th className="p-3 text-right">Price</th></tr></thead><tbody className="text-sm divide-y divide-slate-700">{selectedTeam.players.map((p, idx) => (<tr key={idx}><td className="p-3 font-bold">{p.name} {p.nationality === 'Overseas' && '✈️'}</td><td className="p-3 text-gray-300">{p.role}</td><td className="p-3">{p.nationality === 'Overseas' ? 'Overseas' : 'Indian'}</td><td className="p-3 text-right font-mono font-bold text-green-400">{formatCurrency(p.sold_price)}</td></tr>))}</tbody></table></div>
+                </div>
+            );
+        };
+
+        const AuctionView = ({ gameState, socket, myTeam, placeBid, adminMoveOn }) => {
+            const currentPlayer = gameState.players[gameState.current_player_index];
+            const isAdmin = gameState.users[socket.id]?.is_admin;
+            const [localTimer, setLocalTimer] = React.useState(gameState.timer_seconds);
+            const [isInterested, setIsInterested] = React.useState(true);
+            const [settings, setSettings] = React.useState(gameState.settings || {});
+
+            const TEAM_THEMES = { 'CSK': 'from-yellow-500 to-yellow-700', 'MI': 'from-blue-600 to-blue-900', 'RCB': 'from-red-600 via-red-900 to-black', 'KKR': 'from-purple-900 to-yellow-600', 'RR': 'from-pink-600 to-blue-600', 'SRH': 'from-orange-500 to-orange-800', 'DC': 'from-blue-600 to-red-600', 'PBKS': 'from-red-600 to-yellow-500', 'LSG': 'from-cyan-500 to-orange-400', 'GT': 'from-slate-800 to-yellow-500' };
+            const activeGradient = gameState.current_top_bidder_team ? TEAM_THEMES[gameState.current_top_bidder_team] : null;
+            const cardStyle = activeGradient ? `bg-gradient-to-br ${activeGradient} border-white/20 shadow-[0_0_40px_rgba(0,0,0,0.5)] scale-105 transition-all duration-500` : `glass-panel border-slate-600 transition-all duration-500`;
+
+            React.useEffect(() => {
+                socket.on('timer_update', (seconds) => setLocalTimer(seconds));
+                setLocalTimer(gameState.timer_seconds);
+                return () => socket.off('timer_update');
+            }, [gameState]);
+
+            React.useEffect(() => { setIsInterested(true); }, [currentPlayer?.id]);
+            React.useEffect(() => { if(gameState.settings) setSettings(gameState.settings); }, [gameState.settings]);
+
+            const handleBid = () => { placeBid(); setIsInterested(true); };
+            const handleNotInterested = () => { setIsInterested(false); socket.emit('toggle_interest', false); };
+            const saveSettings = () => { socket.emit('admin_update_settings', settings); };
+
+            let nextMin = 0;
+            if(currentPlayer) { const c = gameState.current_bid; nextMin = c === 0 ? currentPlayer.base_price : (c < 10000000 ? c+500000 : (c < 100000000 ? c+2000000 : c+5000000)); }
+            const canAfford = myTeam.purse >= nextMin;
+            const isHighest = gameState.current_top_bidder === socket.id;
+
+            return (
+                <div className="flex flex-col h-full overflow-hidden">
+                    <main className="flex-1 flex flex-col items-center justify-center p-4 relative">
+                        {currentPlayer ? (
+                            <div className={`w-full max-w-xl p-6 rounded-3xl relative border flex flex-col overflow-hidden ${cardStyle}`}>
+                                {activeGradient && <div className="absolute inset-0 bg-black/20 pointer-events-none"></div>}
+                                <div className="relative z-10">
+                                    <div className="absolute -top-6 left-1/2 -translate-x-1/2"><div className={`rounded-full w-20 h-20 flex items-center justify-center border-4 shadow-xl text-3xl font-display font-bold bg-slate-900 ${localTimer <= 5 && gameState.is_timer_running ? 'border-red-500 text-red-500 animate-pulse' : 'border-ipl-gold text-white'}`}>{localTimer}</div></div>
+                                    <div className="flex justify-between mb-4 mt-6"><span className="bg-black/40 text-white px-2 py-1 rounded text-xs font-bold shadow">{currentPlayer.category}</span><span className="font-mono text-gray-200 text-xs font-bold drop-shadow-md">BP: {formatCurrency(currentPlayer.base_price)}</span></div>
+                                    <div className="text-center mb-6">
+                                        <h2 className="text-4xl font-display font-bold text-white drop-shadow-lg flex items-center justify-center gap-3">
+                                            {currentPlayer.name} {currentPlayer.nationality === 'Overseas' && <span className="text-3xl animate-bounce">✈️</span>}
+                                        </h2>
+                                        <p className="text-blue-200 font-bold">{currentPlayer.role} • {currentPlayer.nationality}</p>
+                                    </div>
+                                    <div className="bg-black/30 p-4 rounded-xl mb-6 flex justify-between items-center border border-white/10 backdrop-blur-sm">
+                                        <div>
+                                            <p className="text-xs text-gray-300 uppercase">Current Bid</p>
+                                            <p className="text-3xl font-mono font-bold text-white drop-shadow">{formatCurrency(gameState.current_bid)}</p>
+                                            {gameState.current_top_bidder_team && (
+                                                <div className="flex items-center gap-2 mt-1">
+                                                    <TeamLogo teamId={gameState.current_top_bidder_team} size="h-6 w-6" />
+                                                    <span className="text-xs font-bold text-ipl-gold bg-black/50 px-2 py-0.5 rounded">{gameState.current_top_bidder_team}</span>
+                                                </div>
+                                            )}
+                                        </div>
+                                        <div className="text-right"><p className="text-xs text-gray-300 uppercase">Next</p><p className="text-xl font-mono text-gray-200">{formatCurrency(nextMin)}</p></div>
+                                    </div>
+                                    <div className="flex flex-col gap-3">
+                                        {isHighest ? <button disabled className="w-full bg-slate-800/80 py-4 rounded-xl font-bold text-gray-400 cursor-not-allowed border border-white/10">Highest Bidder</button> : <button onClick={handleBid} disabled={!canAfford} className={`w-full py-4 rounded-xl font-bold text-xl transition-all shadow-lg border border-white/10 ${!canAfford ? "bg-slate-800 text-gray-600" : isInterested ? "bg-green-600 hover:bg-green-500 text-white hover:scale-105" : "bg-slate-600 text-gray-300"}`}>BID {formatCurrency(nextMin)}</button>}
+                                        {isInterested && !isHighest && <button onClick={handleNotInterested} className="text-white/60 text-xs font-bold hover:text-white uppercase tracking-widest">Not Interested</button>}
+                                    </div>
+                                </div>
+                            </div>
+                        ) : (<div className="text-center opacity-50"><h2 className="text-2xl font-bold">PAUSED</h2></div>)}
+                    </main>
+                    {isAdmin && (
+                        <div className="p-4 bg-slate-800 border-t border-slate-700 grid grid-cols-2 gap-4">
+                            <div className="flex flex-col gap-2">
+                                <button onClick={() => gameState.is_timer_running ? socket.emit('admin_stop_timer') : socket.emit('admin_start_timer')} className={`w-full py-2 rounded font-bold ${gameState.is_timer_running ? 'bg-orange-600' : 'bg-green-600'}`}>{gameState.is_timer_running ? 'STOP TIMER' : 'START TIMER'}</button>
+                                <button onClick={adminMoveOn} className="bg-red-600 w-full py-2 rounded font-bold hover:bg-red-500">{currentPlayer ? "NEXT PLAYER >>" : "START AUCTION"}</button>
+                            </div>
+                            <div className="bg-slate-900 p-2 rounded text-xs grid grid-cols-2 gap-2">
+                                <div><label className="text-gray-500">Min Squad</label><input type="number" className="w-full bg-slate-800 border border-slate-700 p-1" value={settings.min_squad} onChange={e=>setSettings({...settings, min_squad: parseInt(e.target.value)})}/></div>
+                                <div><label className="text-gray-500">Max Squad</label><input type="number" className="w-full bg-slate-800 border border-slate-700 p-1" value={settings.max_squad} onChange={e=>setSettings({...settings, max_squad: parseInt(e.target.value)})}/></div>
+                                <div><label className="text-gray-500">Timer (s)</label><input type="number" className="w-full bg-slate-800 border border-slate-700 p-1" value={settings.default_timer} onChange={e=>setSettings({...settings, default_timer: parseInt(e.target.value)})}/></div>
+                                <button onClick={saveSettings} className="bg-blue-600 rounded text-white font-bold h-full">SAVE</button>
+                            </div>
+                        </div>
+                    )}
+                </div>
+            );
+        };
+
+        const IPL_TEAMS = [{ id: 'CSK', name: 'Chennai Super Kings', color: 'bg-yellow-500' }, { id: 'MI', name: 'Mumbai Indians', color: 'bg-blue-600' }, { id: 'RCB', name: 'Royal Challengers', color: 'bg-red-600' }, { id: 'GT', name: 'Gujarat Titans', color: 'bg-teal-700' }, { id: 'KKR', name: 'Kolkata Knight Riders', color: 'bg-purple-700' }, { id: 'SRH', name: 'Sunrisers Hyderabad', color: 'bg-orange-500' }, { id: 'RR', name: 'Rajasthan Royals', color: 'bg-pink-600' }, { id: 'DC', name: 'Delhi Capitals', color: 'bg-blue-500' }, { id: 'LSG', name: 'Lucknow Super Giants', color: 'bg-cyan-600' }, { id: 'PBKS', name: 'Punjab Kings', color: 'bg-red-500' }];
+
+        function App() {
+            const [view, setView] = React.useState('LANDING'); 
+            const [currentTab, setTab] = React.useState('AUCTION');
+            const [roomCode, setRoomCode] = React.useState("");
+            const [userName, setUserName] = React.useState("");
+            const [gameState, setGameState] = React.useState(null);
+            const [error, setError] = React.useState("");
+            const [isConnected, setIsConnected] = React.useState(socket.connected);
+
+            React.useEffect(() => {
+                socket.on('connect', () => setIsConnected(true));
+                socket.on('disconnect', () => setIsConnected(false));
+                socket.on('room_joined', (data) => { setGameState(data.state); setRoomCode(data.code); setView(data.state.status === 'LOBBY' ? 'LOBBY' : 'GAME'); });
+                socket.on('state_update', (state) => { setGameState(state); if(state.status === 'AUCTION' && view === 'LOBBY') setView('GAME'); });
+                socket.on('new_player_nominated', (state) => setGameState(state));
+                socket.on('bid_update', (data) => setGameState(prev => ({...prev, current_bid: data.amount, current_top_bidder_team: data.bidder_name})));
+                socket.on('player_sold', () => {}); 
+                socket.on('error_msg', (msg) => { setError(msg); setTimeout(() => setError(""), 3000); });
+                return () => { socket.off('connect'); socket.off('disconnect'); }
+            }, [view]);
+
+            const handleCreate = () => { if(userName) socket.emit('create_room', userName); else setError("Enter Name"); };
+            const handleJoin = () => { if(userName && roomCode) socket.emit('join_room', { code: roomCode, userName }); else setError("Fill fields"); };
+            const claimTeam = (teamId) => socket.emit('claim_team', teamId);
+            const startGame = () => socket.emit('admin_start_game');
+
+            if (view === 'LANDING' || view === 'CREATE_FORM' || view === 'JOIN_FORM') {
+                 const isForm = view !== 'LANDING';
+                 return (
+                    <div className="flex h-screen items-center justify-center bg-[url('https://wallpaperaccess.com/full/1672332.jpg')] bg-cover">
+                        <div className="absolute top-4 right-4 flex items-center gap-2 bg-black/50 px-3 py-1 rounded-full">
+                            <div className={`w-3 h-3 rounded-full ${isConnected ? 'bg-green-500' : 'bg-red-500'}`}></div>
+                            <span className="text-xs font-bold text-white">{isConnected ? "Server Online" : "Disconnected"}</span>
+                        </div>
+                        <div className="glass-panel p-10 rounded-2xl text-center w-full max-w-md">
+                            <h1 className="text-5xl font-display font-bold text-ipl-gold mb-8">IPL AUCTION</h1>
+                            {!isForm ? (
+                                <div className="space-y-4">
+                                    <button onClick={() => setView('CREATE_FORM')} className="w-full bg-gradient-to-r from-ipl-gold to-yellow-600 text-black font-bold p-4 rounded">CREATE ROOM</button>
+                                    <button onClick={() => setView('JOIN_FORM')} className="w-full bg-slate-700 text-white font-bold p-4 rounded">JOIN ROOM</button>
+                                </div>
+                            ) : (
+                                <div>
+                                    {view === 'JOIN_FORM' && <input className="w-full bg-slate-800 border p-3 mb-3 rounded text-white text-center" placeholder="CODE" value={roomCode} onChange={e => setRoomCode(e.target.value)} />}
+                                    <input className="w-full bg-slate-800 border p-3 mb-6 rounded text-white text-center" placeholder="YOUR NAME" value={userName} onChange={e => setUserName(e.target.value)} />
+                                    {error && <p className="text-red-500 mb-4 font-bold bg-black/50 p-2 rounded">{error}</p>}
+                                    <button onClick={view === 'CREATE_FORM' ? handleCreate : handleJoin} className="w-full bg-ipl-gold text-black font-bold p-3 rounded">GO</button>
+                                    <button onClick={() => setView('LANDING')} className="mt-4 text-gray-400">Back</button>
+                                </div>
+                            )}
+                        </div>
+                    </div>
+                 );
+            }
+
+            if (view === 'LOBBY' && gameState) {
+                const myUser = gameState.users[socket.id];
+                const takenTeams = Object.values(gameState.users).map(u => u.team_id).filter(Boolean);
+                return (
+                    <div className="min-h-screen bg-slate-900 text-white p-8">
+                        <div className="max-w-6xl mx-auto">
+                            <h1 className="text-3xl font-display font-bold text-ipl-gold mb-4">TEAM SELECTION <span className="text-white text-sm ml-4">Code: {gameState.code}</span></h1>
+                            <div className="grid grid-cols-2 md:grid-cols-5 gap-4 mb-8">
+                                {IPL_TEAMS.map(team => (
+                                    <button key={team.id} disabled={takenTeams.includes(team.id)} onClick={() => claimTeam(team.id)} className={`p-6 rounded-xl border-2 flex flex-col items-center gap-3 transition-all ${myUser.team_id === team.id ? 'border-green-500 bg-slate-800 scale-105' : takenTeams.includes(team.id) ? 'opacity-50 cursor-not-allowed' : 'border-slate-700 hover:border-ipl-gold'}`}>
+                                        <TeamLogo teamId={team.id} size="h-16 w-16" />
+                                        <h3 className="font-bold">{team.name}</h3>
+                                    </button>
+                                ))}
+                            </div>
+                            {myUser.is_admin && <button onClick={startGame} disabled={!myUser.team_id} className="bg-green-600 px-8 py-3 rounded font-bold">START AUCTION</button>}
+                        </div>
+                    </div>
+                );
+            }
+
+            if (!gameState) return <div>Loading...</div>;
+            const myTeam = gameState.teams[socket.id] || {}; 
+            const stats = getSquadStats(myTeam.players || []);
+
+            return (
+                <div className="flex flex-col h-screen bg-slate-900 text-white overflow-hidden">
+                    <header className="glass-panel p-3 flex justify-between items-center z-50">
+                        <div className="flex items-center gap-4">
+                            <TeamLogo teamId={myTeam.name} size="h-12 w-12" />
+                            <div><h1 className="font-display text-xl">{myTeam.name || "SPECTATOR"}</h1><p className="text-xs text-ipl-gold font-bold">OWNER: {gameState.users[socket.id].name.toUpperCase()}</p></div>
+                        </div>
+                        <div className="text-right"><p className="text-xs text-gray-400">PURSE</p><p className="font-mono text-2xl font-bold text-ipl-gold">{formatCurrency(myTeam.purse)}</p></div>
+                    </header>
+                    <NavBar currentTab={currentTab} setTab={setTab} />
+                    <div className="flex-1 overflow-hidden relative">
+                        {error && <div className="absolute top-4 left-1/2 -translate-x-1/2 z-50 bg-red-600 px-6 py-2 rounded-full font-bold animate-bounce">{error}</div>}
+                        {currentTab === 'AUCTION' && (<AuctionView gameState={gameState} socket={socket} myTeam={myTeam} placeBid={() => socket.emit('place_bid')} adminMoveOn={() => socket.emit('admin_move_on')} />)}
+                        {currentTab === 'PLAYER POOL' && (<PlayerPoolView players={gameState.players} />)}
+                        {currentTab === 'SQUADS' && (<SquadView teams={gameState.teams} currentUserId={socket.id} />)}
+                    </div>
+                </div>
+            );
+        }
+        const root = ReactDOM.createRoot(document.getElementById('root'));
+        root.render(<App />);
+    </script>
+</body>
+</html>

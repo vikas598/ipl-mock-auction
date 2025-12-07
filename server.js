@@ -1,0 +1,314 @@
+const express = require('express');
+const http = require('http');
+const { Server } = require("socket.io");
+const initialPlayers = require('./players');
+
+const app = express();
+const server = http.createServer(app);
+const io = new Server(server, { cors: { origin: "*" } });
+
+app.use(express.static('public'));
+
+const ROOMS = {}; 
+const ROOM_TIMERS = {}; 
+
+// --- CONFIG ---
+const STARTING_PURSE = 1200000000; // 120 Crores
+const DEFAULT_TIMER_DURATION = 60; 
+const BID_RESET_TIMER = 20;
+const MAX_OVERSEAS = 8; // Max 8 Overseas Players
+
+function createNewGameState(adminId, adminName) {
+    return {
+        code: null,
+        status: 'LOBBY',
+        settings: {
+            min_squad: 18, // Can be changed by admin
+            max_squad: 25,
+            default_timer: DEFAULT_TIMER_DURATION
+        },
+        users: { 
+            [adminId]: { 
+                id: adminId, 
+                name: adminName, 
+                is_admin: true, 
+                team_id: null,
+                is_interested: true // Default true
+            } 
+        },
+        teams: {},
+        players: JSON.parse(JSON.stringify(initialPlayers)),
+        current_player_index: -1,
+        current_bid: 0,
+        current_top_bidder: null,
+        current_top_bidder_team: null,
+        timer_duration: DEFAULT_TIMER_DURATION,
+        timer_seconds: 0,
+        is_timer_running: false
+    };
+}
+
+function generateRoomCode() {
+    const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+    let result = '';
+    for (let i = 0; i < 6; i++) result += chars.charAt(Math.floor(Math.random() * chars.length));
+    return result;
+}
+
+function getNextMinBid(currentBid, basePrice) {
+    if (currentBid === 0) return basePrice;
+    if (currentBid < 10000000) return currentBid + 500000;
+    if (currentBid < 100000000) return currentBid + 2000000;
+    return currentBid + 5000000;
+}
+
+function resetInterest(room) {
+    Object.keys(room.users).forEach(uid => {
+        room.users[uid].is_interested = true;
+    });
+}
+
+function finalizeAndMoveOn(roomCode) {
+    const room = ROOMS[roomCode];
+    if (!room) return;
+
+    // 1. Stop Timer & Reset
+    clearInterval(ROOM_TIMERS[roomCode]);
+    room.is_timer_running = false;
+    room.timer_seconds = room.settings.default_timer;
+
+    // 2. Finalize Transaction
+    if (room.current_player_index >= 0 && room.current_player_index < room.players.length) {
+        const player = room.players[room.current_player_index];
+        const winnerSocketId = room.current_top_bidder;
+
+        if (winnerSocketId && room.teams[winnerSocketId]) {
+            const winnerTeam = room.teams[winnerSocketId];
+            winnerTeam.purse -= room.current_bid;
+            winnerTeam.players.push({ ...player, sold_price: room.current_bid });
+            
+            if (player.nationality === 'Overseas') winnerTeam.overseas_count++;
+            
+            player.status = 'SOLD';
+            player.sold_price = room.current_bid;
+            player.sold_to = winnerTeam.name;
+            io.to(roomCode).emit('player_sold', { winner: winnerTeam.name, amount: room.current_bid });
+        } else {
+            player.status = 'UNSOLD';
+            io.to(roomCode).emit('player_sold', { winner: 'UNSOLD', amount: 0 });
+        }
+    }
+
+    // 3. Next Player
+    room.current_player_index++;
+    room.current_bid = 0;
+    room.current_top_bidder = null;
+    room.current_top_bidder_team = null;
+    
+    // Reset Interest for everyone for the new player
+    resetInterest(room);
+
+    // 4. Broadcast
+    if (room.current_player_index < room.players.length) {
+        io.to(roomCode).emit('new_player_nominated', room);
+    } else {
+        io.to(roomCode).emit('state_update', room); // End of list
+    }
+}
+
+// Check if we should auto-sell because everyone else is "Not Interested"
+function checkAutoSellCondition(room) {
+    // Logic: If there is at least one active team besides the winner, 
+    // and ALL other active teams are "Not Interested", then sell.
+    
+    const activeTeams = Object.values(room.users).filter(u => u.team_id !== null);
+    if (activeTeams.length < 2) return; // Need at least 2 people to have an auction
+
+    // Who is currently winning?
+    const winnerId = room.current_top_bidder;
+
+    // Look at everyone ELSE (who is not winning)
+    const opponents = activeTeams.filter(u => u.id !== winnerId);
+
+    // If all opponents are explicitly NOT interested
+    const allOpponentsNotInterested = opponents.every(u => u.is_interested === false);
+
+    if (allOpponentsNotInterested) {
+        // Trigger auto-sell with a small delay to avoid jarring transitions
+        // We simulate "Time Up"
+        io.to(room.code).emit('error_msg', "All teams Not Interested. Auto-selling in 3s...");
+        
+        setTimeout(() => {
+            // Re-check in case someone toggled back
+            const currentWinner = room.current_top_bidder;
+            if(winnerId !== currentWinner) return; // Bid changed, abort
+            
+            const reCheckOpponents = Object.values(room.users)
+                .filter(u => u.team_id !== null && u.id !== currentWinner);
+            
+            if(reCheckOpponents.every(u => u.is_interested === false)) {
+                finalizeAndMoveOn(room.code);
+            }
+        }, 3000);
+    }
+}
+
+function startRoomTimer(roomCode) {
+    if (ROOM_TIMERS[roomCode]) clearInterval(ROOM_TIMERS[roomCode]);
+    const room = ROOMS[roomCode];
+    room.is_timer_running = true;
+    io.to(roomCode).emit('timer_update', room.timer_seconds);
+
+    ROOM_TIMERS[roomCode] = setInterval(() => {
+        if (room.timer_seconds > 0) {
+            room.timer_seconds--;
+            io.to(roomCode).emit('timer_update', room.timer_seconds);
+        } else {
+            finalizeAndMoveOn(roomCode);
+        }
+    }, 1000);
+}
+
+io.on('connection', (socket) => {
+    
+    // ... Create/Join Room Logic ...
+    socket.on('create_room', (userName) => {
+        const code = generateRoomCode();
+        ROOMS[code] = createNewGameState(socket.id, userName);
+        ROOMS[code].code = code;
+        socket.join(code);
+        socket.roomCode = code;
+        socket.emit('room_joined', { code, is_admin: true, state: ROOMS[code] });
+    });
+
+    socket.on('join_room', ({ code, userName }) => {
+        const roomCode = code.toUpperCase();
+        const room = ROOMS[roomCode];
+        if (!room) return socket.emit('error_msg', "Invalid Room Code");
+        if (room.status !== 'LOBBY') return socket.emit('error_msg', "Auction already started!");
+        
+        room.users[socket.id] = { 
+            id: socket.id, 
+            name: userName, 
+            is_admin: false, 
+            team_id: null,
+            is_interested: true 
+        };
+        socket.join(roomCode);
+        socket.roomCode = roomCode;
+        io.to(roomCode).emit('state_update', room);
+        socket.emit('room_joined', { code: roomCode, is_admin: false, state: room });
+    });
+
+    socket.on('claim_team', (teamId) => {
+        const room = ROOMS[socket.roomCode];
+        if (!room || room.status !== 'LOBBY') return;
+        const isTaken = Object.values(room.users).some(u => u.team_id === teamId);
+        if(isTaken) return socket.emit('error_msg', "Team already taken!");
+        
+        room.users[socket.id].team_id = teamId;
+        room.teams[socket.id] = { 
+            id: socket.id, 
+            name: teamId, 
+            owner_name: room.users[socket.id].name, 
+            purse: STARTING_PURSE, // 120 CR
+            players: [], 
+            overseas_count: 0 
+        };
+        io.to(room.code).emit('state_update', room);
+    });
+
+    // --- NEW: ADMIN SETTINGS ---
+    socket.on('admin_update_settings', (newSettings) => {
+        const room = ROOMS[socket.roomCode];
+        if (!room || !room.users[socket.id]?.is_admin) return;
+        room.settings = { ...room.settings, ...newSettings };
+        room.timer_duration = newSettings.default_timer; // Update current timer logic
+        io.to(room.code).emit('state_update', room);
+        io.to(room.code).emit('error_msg', "Settings Updated!");
+    });
+
+    socket.on('admin_start_game', () => {
+        const room = ROOMS[socket.roomCode];
+        if (room && room.users[socket.id]?.is_admin) {
+            room.status = 'AUCTION';
+            io.to(room.code).emit('state_update', room);
+        }
+    });
+
+    // --- TIMER & ADMIN ACTIONS ---
+    socket.on('admin_start_timer', () => {
+        const room = ROOMS[socket.roomCode];
+        if (room?.users[socket.id]?.is_admin) startRoomTimer(room.code);
+    });
+    socket.on('admin_stop_timer', () => {
+        const room = ROOMS[socket.roomCode];
+        if (room?.users[socket.id]?.is_admin) {
+            clearInterval(ROOM_TIMERS[room.code]);
+            room.is_timer_running = false;
+            io.to(room.code).emit('state_update', room);
+        }
+    });
+    socket.on('admin_move_on', () => finalizeAndMoveOn(socket.roomCode));
+
+    // --- NEW: INTEREST TOGGLE ---
+    socket.on('toggle_interest', (isInterested) => {
+        const room = ROOMS[socket.roomCode];
+        if (!room) return;
+        
+        // Update user state
+        if (room.users[socket.id]) {
+            room.users[socket.id].is_interested = isInterested;
+        }
+
+        // Check if everyone is "Not Interested"
+        checkAutoSellCondition(room);
+    });
+
+    // --- BIDDING ---
+    socket.on('place_bid', () => {
+        const room = ROOMS[socket.roomCode];
+        if (!room) return;
+        const team = room.teams[socket.id];
+        const player = room.players[room.current_player_index];
+
+        if (!team || !player) return;
+        if (room.current_top_bidder === socket.id) return socket.emit('error_msg', "You hold the highest bid!");
+
+        const nextBid = getNextMinBid(room.current_bid, player.base_price);
+        
+        // 1. Check Funds
+        if (team.purse < nextBid) return socket.emit('error_msg', "Insufficient Funds");
+        
+        // 2. Check Squad Max Size (Dynamic Setting)
+        if (team.players.length >= room.settings.max_squad) {
+            return socket.emit('error_msg', `Squad Limit Reached (${room.settings.max_squad})`);
+        }
+        
+        // 3. Check Overseas Limit (Max 8)
+        if (player.nationality === 'Overseas' && team.overseas_count >= MAX_OVERSEAS) {
+            return socket.emit('error_msg', `Overseas Limit Reached (${MAX_OVERSEAS})`);
+        }
+
+        // Accept Bid
+        room.current_bid = nextBid;
+        room.current_top_bidder = socket.id;
+        room.current_top_bidder_team = team.name;
+
+        // Reset Timer
+        room.timer_seconds = BID_RESET_TIMER; 
+        
+        // Reset Interest for everyone (bidding restarts interest)
+        resetInterest(room);
+
+        io.to(room.code).emit('bid_update', { amount: nextBid, bidder_name: team.name });
+        io.to(room.code).emit('timer_update', room.timer_seconds); 
+    });
+
+    socket.on('disconnect', () => {
+        // Handle disconnect logic if needed
+    });
+});
+
+const PORT = 3000;
+server.listen(PORT, () => { console.log(`Server running on http://localhost:${PORT}`); });
