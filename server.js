@@ -13,13 +13,12 @@ const ROOMS = {};
 const ROOM_TIMERS = {}; 
 
 // --- CONFIG ---
-const STARTING_PURSE = 1200000000; // 120 Crores
+const STARTING_PURSE = 1200000000; 
 const DEFAULT_TIMER_DURATION = 60; 
 const BID_RESET_TIMER = 20;
 const MAX_OVERSEAS = 8; 
 
 // --- HELPER: FISHER-YATES SHUFFLE ---
-// This ensures true randomness without repetition
 function shuffleArray(array) {
     for (let i = array.length - 1; i > 0; i--) {
         const j = Math.floor(Math.random() * (i + 1));
@@ -29,41 +28,22 @@ function shuffleArray(array) {
 }
 
 function createNewGameState(adminId, adminName) {
-    // 1. Get fresh copy
     let allPlayers = JSON.parse(JSON.stringify(initialPlayers));
-    
-    // 2. SEPARATE POOLS based on your new 'marquee' column
     const marqueeSet = allPlayers.filter(p => p.marquee === true);
     const regularSet = allPlayers.filter(p => p.marquee !== true);
-
-    // 3. SHUFFLE EACH POOL INDEPENDENTLY
-    // This ensures Marquee players are random among themselves, 
-    // and Regular players are random among themselves.
     shuffleArray(marqueeSet);
     shuffleArray(regularSet);
-
-    // 4. COMBINE (Marquee First -> Then Regular)
     const sortedList = [...marqueeSet, ...regularSet];
 
     return {
         code: null,
         status: 'LOBBY',
-        settings: {
-            min_squad: 18, 
-            max_squad: 25,
-            default_timer: DEFAULT_TIMER_DURATION
-        },
+        settings: { min_squad: 18, max_squad: 25, default_timer: DEFAULT_TIMER_DURATION },
         users: { 
-            [adminId]: { 
-                id: adminId, 
-                name: adminName, 
-                is_admin: true, 
-                team_id: null,
-                is_interested: true 
-            } 
+            [adminId]: { id: adminId, name: adminName, is_admin: true, team_id: null, is_interested: true } 
         },
         teams: {},
-        players: sortedList, // Use the custom sorted list
+        players: sortedList,
         current_player_index: -1,
         current_bid: 0,
         current_top_bidder: null,
@@ -89,21 +69,17 @@ function getNextMinBid(currentBid, basePrice) {
 }
 
 function resetInterest(room) {
-    Object.keys(room.users).forEach(uid => {
-        room.users[uid].is_interested = true;
-    });
+    Object.keys(room.users).forEach(uid => { room.users[uid].is_interested = true; });
 }
 
 function finalizeAndMoveOn(roomCode) {
     const room = ROOMS[roomCode];
     if (!room) return;
 
-    // 1. Stop Timer & Reset
     clearInterval(ROOM_TIMERS[roomCode]);
     room.is_timer_running = false;
     room.timer_seconds = room.settings.default_timer;
 
-    // 2. Finalize Transaction
     if (room.current_player_index >= 0 && room.current_player_index < room.players.length) {
         const player = room.players[room.current_player_index];
         const winnerSocketId = room.current_top_bidder;
@@ -112,7 +88,6 @@ function finalizeAndMoveOn(roomCode) {
             const winnerTeam = room.teams[winnerSocketId];
             winnerTeam.purse -= room.current_bid;
             winnerTeam.players.push({ ...player, sold_price: room.current_bid });
-            
             if (player.nationality === 'Overseas') winnerTeam.overseas_count++;
             
             player.status = 'SOLD';
@@ -125,15 +100,12 @@ function finalizeAndMoveOn(roomCode) {
         }
     }
 
-    // 3. Next Player (Sequential access of the Shuffled List)
     room.current_player_index++;
     room.current_bid = 0;
     room.current_top_bidder = null;
     room.current_top_bidder_team = null;
-    
     resetInterest(room);
 
-    // 4. Broadcast
     if (room.current_player_index < room.players.length) {
         io.to(roomCode).emit('new_player_nominated', room);
     } else {
@@ -141,7 +113,6 @@ function finalizeAndMoveOn(roomCode) {
     }
 }
 
-// Check if we should auto-sell because everyone else is "Not Interested"
 function checkAutoSellCondition(room) {
     const activeTeams = Object.values(room.users).filter(u => u.team_id !== null);
     if (activeTeams.length < 2) return; 
@@ -197,13 +168,7 @@ io.on('connection', (socket) => {
         if (!room) return socket.emit('error_msg', "Invalid Room Code");
         if (room.status !== 'LOBBY') return socket.emit('error_msg', "Auction already started!");
         
-        room.users[socket.id] = { 
-            id: socket.id, 
-            name: userName, 
-            is_admin: false, 
-            team_id: null,
-            is_interested: true 
-        };
+        room.users[socket.id] = { id: socket.id, name: userName, is_admin: false, team_id: null, is_interested: true };
         socket.join(roomCode);
         socket.roomCode = roomCode;
         io.to(roomCode).emit('state_update', room);
@@ -237,42 +202,42 @@ io.on('connection', (socket) => {
         io.to(room.code).emit('error_msg', "Settings Updated!");
     });
 
+    // --- NEW: MANUAL ADMIN TRANSFER ---
+    socket.on('admin_transfer_role', (targetUserId) => {
+        const room = ROOMS[socket.roomCode];
+        if (!room || !room.users[socket.id]?.is_admin) return;
+        if (!room.users[targetUserId]) return;
+
+        // Swap roles
+        room.users[socket.id].is_admin = false;
+        room.users[targetUserId].is_admin = true;
+
+        io.to(room.code).emit('state_update', room);
+        io.to(room.code).emit('error_msg', `Admin transferred to ${room.users[targetUserId].name}`);
+    });
+
+    // --- NEW: ADMIN KICK USER ---
+    socket.on('admin_kick_user', (targetUserId) => {
+        const room = ROOMS[socket.roomCode];
+        if (!room || !room.users[socket.id]?.is_admin || targetUserId === socket.id) return;
+
+        // Notify and cleanup
+        io.to(targetUserId).emit('kicked_from_room');
+        if (room.teams[targetUserId]) delete room.teams[targetUserId];
+        if (room.users[targetUserId]) delete room.users[targetUserId];
+        
+        const targetSocket = io.sockets.sockets.get(targetUserId);
+        if (targetSocket) targetSocket.leave(socket.roomCode);
+
+        io.to(socket.roomCode).emit('state_update', room);
+    });
+
     socket.on('admin_start_game', () => {
         const room = ROOMS[socket.roomCode];
         if (room && room.users[socket.id]?.is_admin) {
             room.status = 'AUCTION';
             io.to(room.code).emit('state_update', room);
         }
-    });
-    // --- ADMIN: KICK USER ---
-    socket.on('admin_kick_user', (targetUserId) => {
-        const room = ROOMS[socket.roomCode];
-        // Validation: Room exists, Requester is Admin, Target is NOT Admin
-        if (!room || !room.users[socket.id]?.is_admin || targetUserId === socket.id) return;
-
-        console.log(`Kicking user: ${targetUserId}`);
-
-        // 1. Notify the target (so their UI resets)
-        io.to(targetUserId).emit('kicked_from_room');
-
-        // 2. Remove from Teams (Free up the team they claimed)
-        if (room.teams[targetUserId]) {
-            delete room.teams[targetUserId];
-        }
-
-        // 3. Remove from Users list
-        if (room.users[targetUserId]) {
-            delete room.users[targetUserId];
-        }
-
-        // 4. Force socket to leave channel (Optional but good practice)
-        const targetSocket = io.sockets.sockets.get(targetUserId);
-        if (targetSocket) {
-            targetSocket.leave(socket.roomCode);
-        }
-
-        // 5. Broadcast update to remaining users
-        io.to(socket.roomCode).emit('state_update', room);
     });
 
     socket.on('admin_start_timer', () => {
@@ -321,7 +286,42 @@ io.on('connection', (socket) => {
         io.to(room.code).emit('timer_update', room.timer_seconds); 
     });
 
-    socket.on('disconnect', () => {});
+    // --- CRITICAL FIX: DISCONNECT HANDLING ---
+    socket.on('disconnect', () => {
+        const roomCode = socket.roomCode;
+        if (!roomCode || !ROOMS[roomCode]) return;
+
+        const room = ROOMS[roomCode];
+        const user = room.users[socket.id];
+        if (!user) return;
+
+        // 1. If in LOBBY, remove user completely (Fixes "Team Taken" issue)
+        if (room.status === 'LOBBY') {
+            if (user.team_id && room.teams[socket.id]) {
+                delete room.teams[socket.id]; // Free up the team
+            }
+            delete room.users[socket.id];
+        }
+
+        // 2. AUTO-ADMIN SUCCESSION
+        // If the disconnected user was Admin, promote the next available user
+        if (user.is_admin) {
+            const remainingUsers = Object.values(room.users);
+            if (remainingUsers.length > 0) {
+                const newAdmin = remainingUsers[0]; // Pick the first person in list
+                newAdmin.is_admin = true;
+                io.to(roomCode).emit('error_msg', `Admin left. ${newAdmin.name} is now Admin.`);
+            } else {
+                // Room is empty, delete it
+                delete ROOMS[roomCode];
+                if (ROOM_TIMERS[roomCode]) clearInterval(ROOM_TIMERS[roomCode]);
+                return;
+            }
+        }
+
+        // 3. Broadcast update
+        io.to(roomCode).emit('state_update', room);
+    });
 });
 
 const PORT = 3000;

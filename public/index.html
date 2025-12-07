@@ -52,7 +52,7 @@
             return <img src={url} alt={teamId} className={`${size} object-contain drop-shadow-md hover:scale-110 transition-transform duration-300`} />;
         };
 
-        const UserListModal = ({ users, onClose, onKick }) => (
+        const UserListModal = ({ users, onClose, onKick, onTransfer }) => (
             <div className="fixed inset-0 bg-black/80 z-[100] flex items-center justify-center p-4">
                 <div className="bg-slate-900 border border-slate-700 w-full max-w-md rounded-xl p-6 shadow-2xl">
                     <div className="flex justify-between items-center mb-6">
@@ -66,10 +66,26 @@
                                     <p className="font-bold">{user.name} {user.id === socket.id && '(You)'}</p>
                                     <p className="text-xs text-blue-400">{user.team_id || 'No Team'}</p>
                                 </div>
-                                {!user.is_admin && (
-                                    <button onClick={() => onKick(user.id)} className="bg-red-600/20 text-red-500 hover:bg-red-600 hover:text-white px-3 py-1 rounded text-xs font-bold border border-red-600/50 transition-colors">KICK ❌</button>
-                                )}
-                                {user.is_admin && <span className="text-xs bg-green-900 text-green-400 px-2 py-1 rounded">HOST</span>}
+                                <div className="flex gap-2">
+                                    {!user.is_admin && (
+                                        <>
+                                            <button 
+                                                onClick={() => onTransfer(user.id)}
+                                                className="bg-blue-600/20 text-blue-400 hover:bg-blue-600 hover:text-white px-3 py-1 rounded text-xs font-bold border border-blue-600/50 transition-colors"
+                                                title="Make Admin"
+                                            >
+                                                👑 ADMIN
+                                            </button>
+                                            <button 
+                                                onClick={() => onKick(user.id)}
+                                                className="bg-red-600/20 text-red-500 hover:bg-red-600 hover:text-white px-3 py-1 rounded text-xs font-bold border border-red-600/50 transition-colors"
+                                            >
+                                                ❌
+                                            </button>
+                                        </>
+                                    )}
+                                    {user.is_admin && <span className="text-xs bg-green-900 text-green-400 px-2 py-1 rounded border border-green-700">HOST</span>}
+                                </div>
                             </div>
                         ))}
                     </div>
@@ -109,15 +125,12 @@
                     </div>
                     <div className="flex-1 overflow-auto glass-panel rounded-xl">
                         <table className="w-full text-left border-collapse">
-                            <thead className="bg-slate-800 text-gray-400 text-xs uppercase sticky top-0"><tr><th className="p-3">Name</th><th className="p-3">Age</th><th className="p-3">Role</th><th className="p-3">Prev Team</th><th className="p-3">Base Price</th><th className="p-3">Status</th><th className="p-3">Price</th><th className="p-3">Buyer</th></tr></thead>
+                            <thead className="bg-slate-800 text-gray-400 text-xs uppercase sticky top-0"><tr><th className="p-3">Name</th><th className="p-3">Role</th><th className="p-3">Base Price</th><th className="p-3">Status</th><th className="p-3">Price</th><th className="p-3">Buyer</th></tr></thead>
                             <tbody className="text-sm divide-y divide-slate-700">
                                 {filteredPlayers.map(p => (
                                     <tr key={p.id} className="hover:bg-slate-700/50">
                                         <td className="p-3 font-bold">{p.name} {p.nationality === 'Overseas' && '✈️'}</td>
-                                        <td className="p-3 text-gray-300">{p.age}</td>
-                                        <td className="p-3 text-gray-400">{p.role}</td>
-                                        <td className="p-3 text-gray-400">{p.prev_team || '-'}</td>
-                                        <td className="p-3 text-gray-300">{formatCurrency(p.base_price)}</td>
+                                        <td className="p-3 text-gray-400">{p.role}</td><td className="p-3 text-gray-300">{formatCurrency(p.base_price)}</td>
                                         <td className="p-3">{p.status === 'SOLD' ? <span className="text-green-400 font-bold">SOLD</span> : p.status === 'UNSOLD' ? <span className="text-red-400 font-bold">UNSOLD</span> : <span className="text-gray-500">PENDING</span>}</td>
                                         <td className="p-3 font-mono text-ipl-gold">{p.status === 'SOLD' ? formatCurrency(p.sold_price) : '-'}</td><td className="p-3 font-bold text-blue-400">{p.sold_to || '-'}</td>
                                     </tr>
@@ -192,8 +205,9 @@
                                         </h2>
                                         <p className="text-blue-200 font-bold">{currentPlayer.role} • {currentPlayer.nationality}</p>
                                         <div className="flex justify-center gap-4 mt-2 text-sm text-gray-300">
-                                            <span>Age: <span className="text-white">{currentPlayer.age}</span></span>
-                                            {currentPlayer.prev_team && currentPlayer.prev_team !== '-' && <span>Prev: <span className="text-white">{currentPlayer.prev_team}</span></span>}
+                                            <span>Age: <span className="text-white font-bold">{currentPlayer.age}</span></span>
+                                            <span className="w-px h-4 bg-gray-600"></span>
+                                            {currentPlayer.prev_team && currentPlayer.prev_team !== '-' && <span>Prev: <span className="text-white font-bold">{currentPlayer.prev_team}</span></span>}
                                         </div>
                                     </div>
                                     <div className="bg-black/30 p-4 rounded-xl mb-6 flex justify-between items-center border border-white/10 backdrop-blur-sm">
@@ -258,6 +272,7 @@
             const claimTeam = (teamId) => socket.emit('claim_team', teamId);
             const startGame = () => socket.emit('admin_start_game');
             const kickUser = (id) => socket.emit('admin_kick_user', id);
+            const transferAdmin = (id) => socket.emit('admin_transfer_role', id);
 
             if (view === 'LANDING' || view === 'CREATE_FORM' || view === 'JOIN_FORM') {
                  const isForm = view !== 'LANDING';
@@ -325,7 +340,7 @@
                     <NavBar currentTab={currentTab} setTab={setTab} />
                     <div className="flex-1 overflow-hidden relative">
                         {error && <div className="absolute top-4 left-1/2 -translate-x-1/2 z-50 bg-red-600 px-6 py-2 rounded-full font-bold animate-bounce">{error}</div>}
-                        {showUserModal && <UserListModal users={gameState.users} onClose={() => setShowUserModal(false)} onKick={kickUser} />}
+                        {showUserModal && <UserListModal users={gameState.users} onClose={() => setShowUserModal(false)} onKick={kickUser} onTransfer={transferAdmin} />}
                         {currentTab === 'AUCTION' && (<AuctionView gameState={gameState} socket={socket} myTeam={myTeam} placeBid={() => socket.emit('place_bid')} adminMoveOn={() => socket.emit('admin_move_on')} onOpenUserList={() => setShowUserModal(true)} />)}
                         {currentTab === 'PLAYER POOL' && (<PlayerPoolView players={gameState.players} />)}
                         {currentTab === 'SQUADS' && (<SquadView teams={gameState.teams} currentUserId={socket.id} />)}
