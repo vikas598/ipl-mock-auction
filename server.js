@@ -16,14 +16,30 @@ const ROOM_TIMERS = {};
 const STARTING_PURSE = 1200000000; // 120 Crores
 const DEFAULT_TIMER_DURATION = 60; 
 const BID_RESET_TIMER = 20;
-const MAX_OVERSEAS = 8; // Max 8 Overseas Players
+const MAX_OVERSEAS = 8; 
+
+// --- HELPER: FISHER-YATES SHUFFLE ---
+// This ensures true randomness without repetition
+function shuffleArray(array) {
+    for (let i = array.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [array[i], array[j]] = [array[j], array[i]];
+    }
+    return array;
+}
 
 function createNewGameState(adminId, adminName) {
+    // 1. Clone the master list
+    let roomPlayers = JSON.parse(JSON.stringify(initialPlayers));
+    
+    // 2. SHUFFLE THE DECK (Randomize Order)
+    shuffleArray(roomPlayers);
+
     return {
         code: null,
         status: 'LOBBY',
         settings: {
-            min_squad: 18, // Can be changed by admin
+            min_squad: 18, 
             max_squad: 25,
             default_timer: DEFAULT_TIMER_DURATION
         },
@@ -33,11 +49,11 @@ function createNewGameState(adminId, adminName) {
                 name: adminName, 
                 is_admin: true, 
                 team_id: null,
-                is_interested: true // Default true
+                is_interested: true 
             } 
         },
         teams: {},
-        players: JSON.parse(JSON.stringify(initialPlayers)),
+        players: roomPlayers, // Use the shuffled list
         current_player_index: -1,
         current_bid: 0,
         current_top_bidder: null,
@@ -99,53 +115,38 @@ function finalizeAndMoveOn(roomCode) {
         }
     }
 
-    // 3. Next Player
+    // 3. Next Player (Sequential access of the Shuffled List)
     room.current_player_index++;
     room.current_bid = 0;
     room.current_top_bidder = null;
     room.current_top_bidder_team = null;
     
-    // Reset Interest for everyone for the new player
     resetInterest(room);
 
     // 4. Broadcast
     if (room.current_player_index < room.players.length) {
         io.to(roomCode).emit('new_player_nominated', room);
     } else {
-        io.to(roomCode).emit('state_update', room); // End of list
+        io.to(roomCode).emit('state_update', room); 
     }
 }
 
 // Check if we should auto-sell because everyone else is "Not Interested"
 function checkAutoSellCondition(room) {
-    // Logic: If there is at least one active team besides the winner, 
-    // and ALL other active teams are "Not Interested", then sell.
-    
     const activeTeams = Object.values(room.users).filter(u => u.team_id !== null);
-    if (activeTeams.length < 2) return; // Need at least 2 people to have an auction
+    if (activeTeams.length < 2) return; 
 
-    // Who is currently winning?
     const winnerId = room.current_top_bidder;
-
-    // Look at everyone ELSE (who is not winning)
     const opponents = activeTeams.filter(u => u.id !== winnerId);
-
-    // If all opponents are explicitly NOT interested
     const allOpponentsNotInterested = opponents.every(u => u.is_interested === false);
 
     if (allOpponentsNotInterested) {
-        // Trigger auto-sell with a small delay to avoid jarring transitions
-        // We simulate "Time Up"
         io.to(room.code).emit('error_msg', "All teams Not Interested. Auto-selling in 3s...");
-        
         setTimeout(() => {
-            // Re-check in case someone toggled back
             const currentWinner = room.current_top_bidder;
-            if(winnerId !== currentWinner) return; // Bid changed, abort
-            
+            if(winnerId !== currentWinner) return; 
             const reCheckOpponents = Object.values(room.users)
                 .filter(u => u.team_id !== null && u.id !== currentWinner);
-            
             if(reCheckOpponents.every(u => u.is_interested === false)) {
                 finalizeAndMoveOn(room.code);
             }
@@ -171,7 +172,6 @@ function startRoomTimer(roomCode) {
 
 io.on('connection', (socket) => {
     
-    // ... Create/Join Room Logic ...
     socket.on('create_room', (userName) => {
         const code = generateRoomCode();
         ROOMS[code] = createNewGameState(socket.id, userName);
@@ -211,19 +211,18 @@ io.on('connection', (socket) => {
             id: socket.id, 
             name: teamId, 
             owner_name: room.users[socket.id].name, 
-            purse: STARTING_PURSE, // 120 CR
+            purse: STARTING_PURSE, 
             players: [], 
             overseas_count: 0 
         };
         io.to(room.code).emit('state_update', room);
     });
 
-    // --- NEW: ADMIN SETTINGS ---
     socket.on('admin_update_settings', (newSettings) => {
         const room = ROOMS[socket.roomCode];
         if (!room || !room.users[socket.id]?.is_admin) return;
         room.settings = { ...room.settings, ...newSettings };
-        room.timer_duration = newSettings.default_timer; // Update current timer logic
+        room.timer_duration = newSettings.default_timer; 
         io.to(room.code).emit('state_update', room);
         io.to(room.code).emit('error_msg', "Settings Updated!");
     });
@@ -236,7 +235,6 @@ io.on('connection', (socket) => {
         }
     });
 
-    // --- TIMER & ADMIN ACTIONS ---
     socket.on('admin_start_timer', () => {
         const room = ROOMS[socket.roomCode];
         if (room?.users[socket.id]?.is_admin) startRoomTimer(room.code);
@@ -251,21 +249,13 @@ io.on('connection', (socket) => {
     });
     socket.on('admin_move_on', () => finalizeAndMoveOn(socket.roomCode));
 
-    // --- NEW: INTEREST TOGGLE ---
     socket.on('toggle_interest', (isInterested) => {
         const room = ROOMS[socket.roomCode];
         if (!room) return;
-        
-        // Update user state
-        if (room.users[socket.id]) {
-            room.users[socket.id].is_interested = isInterested;
-        }
-
-        // Check if everyone is "Not Interested"
+        if (room.users[socket.id]) room.users[socket.id].is_interested = isInterested;
         checkAutoSellCondition(room);
     });
 
-    // --- BIDDING ---
     socket.on('place_bid', () => {
         const room = ROOMS[socket.roomCode];
         if (!room) return;
@@ -277,37 +267,21 @@ io.on('connection', (socket) => {
 
         const nextBid = getNextMinBid(room.current_bid, player.base_price);
         
-        // 1. Check Funds
         if (team.purse < nextBid) return socket.emit('error_msg', "Insufficient Funds");
-        
-        // 2. Check Squad Max Size (Dynamic Setting)
-        if (team.players.length >= room.settings.max_squad) {
-            return socket.emit('error_msg', `Squad Limit Reached (${room.settings.max_squad})`);
-        }
-        
-        // 3. Check Overseas Limit (Max 8)
-        if (player.nationality === 'Overseas' && team.overseas_count >= MAX_OVERSEAS) {
-            return socket.emit('error_msg', `Overseas Limit Reached (${MAX_OVERSEAS})`);
-        }
+        if (team.players.length >= room.settings.max_squad) return socket.emit('error_msg', `Squad Limit Reached (${room.settings.max_squad})`);
+        if (player.nationality === 'Overseas' && team.overseas_count >= MAX_OVERSEAS) return socket.emit('error_msg', `Overseas Limit Reached (${MAX_OVERSEAS})`);
 
-        // Accept Bid
         room.current_bid = nextBid;
         room.current_top_bidder = socket.id;
         room.current_top_bidder_team = team.name;
-
-        // Reset Timer
         room.timer_seconds = BID_RESET_TIMER; 
-        
-        // Reset Interest for everyone (bidding restarts interest)
         resetInterest(room);
 
         io.to(room.code).emit('bid_update', { amount: nextBid, bidder_name: team.name });
         io.to(room.code).emit('timer_update', room.timer_seconds); 
     });
 
-    socket.on('disconnect', () => {
-        // Handle disconnect logic if needed
-    });
+    socket.on('disconnect', () => {});
 });
 
 const PORT = 3000;
