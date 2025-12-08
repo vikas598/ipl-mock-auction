@@ -35,6 +35,7 @@
     <script type="text/babel">
         const socket = io();
         const formatCurrency = (val) => val >= 10000000 ? `₹${(val/10000000).toFixed(2)} Cr` : (val > 0 ? `₹${(val/100000).toFixed(2)} L` : '-');
+        const IPL_LOGO_URL = "https://upload.wikimedia.org/wikipedia/en/8/84/Indian_Premier_League_Official_Logo.svg"; // Official Logo
 
         const TEAM_LOGOS = {
             'CSK': 'https://upload.wikimedia.org/wikipedia/en/thumb/2/2b/Chennai_Super_Kings_Logo.svg/300px-Chennai_Super_Kings_Logo.svg.png',
@@ -58,16 +59,8 @@
         const ChatWidget = ({ chatMessages, isOpen, onClose }) => {
             const [input, setInput] = React.useState("");
             const messagesEndRef = React.useRef(null);
-            
-            React.useEffect(() => { 
-                if (isOpen || window.innerWidth >= 1024) messagesEndRef.current?.scrollIntoView({ behavior: "smooth" }); 
-            }, [chatMessages, isOpen]);
-
-            const sendMessage = (e) => {
-                e.preventDefault();
-                if(input.trim()) { socket.emit('send_chat_message', input); setInput(""); }
-            };
-
+            React.useEffect(() => { if (isOpen || window.innerWidth >= 1024) messagesEndRef.current?.scrollIntoView({ behavior: "smooth" }); }, [chatMessages, isOpen]);
+            const sendMessage = (e) => { e.preventDefault(); if(input.trim()) { socket.emit('send_chat_message', input); setInput(""); } };
             return (
                 <div className={`fixed z-[100] bg-slate-900 border-l border-slate-700 flex flex-col shadow-2xl transition-all duration-300 lg:static lg:w-80 lg:h-full lg:translate-y-0 ${isOpen ? 'bottom-20 right-4 w-80 h-96 rounded-xl border border-slate-600' : 'translate-y-[200%] opacity-0 lg:opacity-100 lg:translate-y-0'}`}>
                     <div className="flex justify-between items-center p-3 border-b border-slate-700 bg-slate-800 rounded-t-xl lg:rounded-none">
@@ -94,16 +87,11 @@
         const HistoryLog = ({ logs }) => {
             const scrollRef = React.useRef(null);
             React.useEffect(() => { scrollRef.current?.scrollTo(0, 0); }, [logs]);
-
             return (
                 <div className="mt-4 w-full bg-black/40 border-t border-slate-700 rounded-xl overflow-hidden flex flex-col">
                     <div className="bg-slate-800/80 px-4 py-2 text-[10px] font-bold text-gray-400 uppercase tracking-widest flex justify-between"><span>Bid History</span><span>Live Updates</span></div>
                     <div ref={scrollRef} className="h-32 overflow-y-auto p-2 space-y-1 no-scrollbar flex flex-col-reverse">
-                        {logs.slice().reverse().map((log, i) => (
-                            <div key={i} className="text-xs border-b border-white/5 py-1.5 px-2 animate-fade-in flex gap-2">
-                                <span className="text-gray-300 font-medium">{log.text}</span>
-                            </div>
-                        ))}
+                        {logs.slice().reverse().map((log, i) => ( <div key={i} className="text-xs border-b border-white/5 py-1.5 px-2 animate-fade-in flex gap-2"><span className="text-gray-300 font-medium">{log.text}</span></div> ))}
                     </div>
                 </div>
             );
@@ -128,14 +116,24 @@
             </div>
         );
 
+        // --- NEW: Leave Confirmation Modal ---
+        const LeaveModal = ({ onConfirm, onCancel }) => (
+            <div className="fixed inset-0 bg-black/90 z-[110] flex items-center justify-center p-4 animate-fade-in">
+                <div className="bg-slate-800 border border-slate-600 w-full max-w-sm rounded-2xl p-6 shadow-2xl text-center">
+                    <h3 className="text-2xl font-bold text-white mb-2">Leave Auction?</h3>
+                    <p className="text-gray-400 text-sm mb-6">You will lose your session. You can rejoin with the code if the auction is still running.</p>
+                    <div className="flex gap-4">
+                        <button onClick={onCancel} className="flex-1 py-3 rounded-xl font-bold text-gray-300 hover:bg-slate-700 border border-slate-600">CANCEL</button>
+                        <button onClick={onConfirm} className="flex-1 py-3 rounded-xl font-bold bg-red-600 text-white hover:bg-red-700 shadow-lg">LEAVE</button>
+                    </div>
+                </div>
+            </div>
+        );
+
         const getSquadStats = (players = []) => ({
             total: players.length,
             indian: players.filter(p => p.nationality === 'Indian').length,
             overseas: players.filter(p => p.nationality === 'Overseas').length,
-            batter: players.filter(p => p.role === 'Batsman').length,
-            bowler: players.filter(p => p.role === 'Bowler').length,
-            allRounder: players.filter(p => p.role === 'All-rounder').length,
-            wk: players.filter(p => p.role === 'Wicket-keeper').length
         });
 
         const NavBar = ({ currentTab, setTab }) => (
@@ -196,7 +194,7 @@
                     <div className="flex overflow-x-auto gap-3 pb-4 mb-2 no-scrollbar">{teamList.map(t => (<button key={t.id} onClick={() => setSelectedTeamId(t.id)} className={`flex-shrink-0 px-4 py-3 rounded-lg border min-w-[140px] text-left transition-all flex items-center gap-3 ${selectedTeamId === t.id ? 'bg-blue-900 border-blue-500 shadow-lg' : 'bg-slate-800 border-slate-700 opacity-60'}`}><TeamLogo teamId={t.name} size="h-8 w-8" /><div><p className="font-bold text-sm truncate">{t.name}</p><p className="text-xs text-gray-400">{t.players.length} Players</p></div></button>))}</div>
                     <div className="glass-panel p-6 rounded-xl mb-4 flex justify-between items-end bg-gradient-to-r from-slate-800 to-slate-900 relative overflow-hidden">
                         <div className="absolute -right-10 -bottom-10 opacity-10 pointer-events-none grayscale"><TeamLogo teamId={selectedTeam.name} size="h-64 w-64" /></div>
-                        <div className="relative z-10"><div className="flex items-center gap-4 mb-3"><TeamLogo teamId={selectedTeam.name} size="h-16 w-16" /><div><h2 className="text-3xl font-display font-bold text-white mb-1">{selectedTeam.name}</h2><p className="text-blue-400 text-sm">Owner: {selectedTeam.owner_name}</p></div></div><div className="flex gap-4 text-xs font-bold text-gray-300"><span className="flex items-center gap-1">🏏 <span className="text-white">{stats.batter}</span></span><span className="flex items-center gap-1">⚾ <span className="text-white">{stats.bowler}</span></span><span className="flex items-center gap-1">⚔️ <span className="text-white">{stats.allRounder}</span></span><span className="flex items-center gap-1">🧤 <span className="text-white">{stats.wk}</span></span><span className="w-px bg-gray-600 mx-1"></span><span className="flex items-center gap-1">🇮🇳 <span className="text-white">{stats.indian}</span></span><span className="flex items-center gap-1">✈️ <span className="text-white">{stats.overseas}</span></span></div></div>
+                        <div className="relative z-10"><div className="flex items-center gap-4 mb-3"><TeamLogo teamId={selectedTeam.name} size="h-16 w-16" /><div><h2 className="text-3xl font-display font-bold text-white mb-1">{selectedTeam.name}</h2><p className="text-blue-400 text-sm">Owner: {selectedTeam.owner_name}</p></div></div><div className="flex gap-4 text-xs font-bold text-gray-300"><span className="w-px bg-gray-600 mx-1"></span><span className="flex items-center gap-1">🇮🇳 <span className="text-white">{stats.indian}</span></span><span className="flex items-center gap-1">✈️ <span className="text-white">{stats.overseas}</span></span></div></div>
                         <div className="text-right relative z-10"><p className="text-xs uppercase text-gray-400">Purse</p><p className="text-4xl font-mono font-bold text-ipl-gold">{formatCurrency(selectedTeam.purse)}</p></div>
                     </div>
                     <div className="flex-1 overflow-auto glass-panel rounded-xl"><table className="w-full text-left border-collapse"><thead className="bg-slate-800 text-gray-400 text-xs uppercase sticky top-0"><tr><th className="p-3">Name</th><th className="p-3">Role</th><th className="p-3">Nat</th><th className="p-3 text-right">Price</th></tr></thead><tbody className="text-sm divide-y divide-slate-700">{selectedTeam.players.map((p, idx) => (<tr key={idx}><td className="p-3 font-bold">{p.name} {p.nationality === 'Overseas' && '✈️'}</td><td className="p-3 text-gray-300">{p.role}</td><td className="p-3">{p.nationality === 'Overseas' ? 'Overseas' : 'Indian'}</td><td className="p-3 text-right font-mono font-bold text-green-400">{formatCurrency(p.sold_price)}</td></tr>))}</tbody></table></div>
@@ -281,7 +279,6 @@
                     </main>
                     {isAdmin && (
                         <div className="p-4 bg-slate-800 border-t border-slate-700 grid grid-cols-2 gap-4 shrink-0 z-50">
-                            {/* --- UPDATED ADMIN CONTROLS (Removed Timer Buttons) --- */}
                             <div className="flex flex-col gap-2">
                                 <button onClick={onOpenUserList} className="bg-purple-600 px-4 py-2 rounded font-bold w-full">👥 Manage Users</button>
                                 <button onClick={adminMoveOn} className="bg-red-600 w-full py-2 rounded font-bold hover:bg-red-500 shadow-lg">{currentPlayer ? "FORCE SELL / NEXT >>" : "START AUCTION"}</button>
@@ -310,6 +307,7 @@
             const [notification, setNotification] = React.useState("");
             const [isConnected, setIsConnected] = React.useState(socket.connected);
             const [showUserModal, setShowUserModal] = React.useState(false);
+            const [showLeaveConfirm, setShowLeaveConfirm] = React.useState(false);
             const [copied, setCopied] = React.useState(false);
             const [lastSold, setLastSold] = React.useState(null); 
             
@@ -382,7 +380,11 @@
                 });
 
                 socket.on('error_msg', (msg) => { setError(msg); setTimeout(() => setError(""), 3000); });
-                socket.on('kicked_from_room', () => { alert("You have been kicked by the Admin."); localStorage.removeItem('ipl_auction_session'); window.location.reload(); });
+                socket.on('kicked_from_room', () => { 
+                    alert("You have been kicked by the Admin."); 
+                    localStorage.removeItem('ipl_auction_session'); 
+                    window.location.reload(); 
+                });
 
                 return () => { 
                     socket.off('connect'); socket.off('disconnect'); 
@@ -416,6 +418,12 @@
             const transferAdmin = (id) => socket.emit('admin_transfer_role', id);
             const handleCopyCode = () => { navigator.clipboard.writeText(gameState.code); setCopied(true); setTimeout(() => setCopied(false), 2000); };
             const openMobileChat = () => { setShowMobileChat(true); setUnreadCount(0); };
+            
+            const handleLeave = () => { setShowLeaveConfirm(true); };
+            const confirmLeave = () => {
+                localStorage.removeItem('ipl_auction_session');
+                window.location.reload();
+            };
 
             if (view === 'LANDING' || view === 'CREATE_FORM' || view === 'JOIN_FORM') {
                  const isForm = view !== 'LANDING';
@@ -451,6 +459,15 @@
                 const takenTeams = Object.values(gameState.users).map(u => u.team_id).filter(Boolean);
                 return (
                     <div className="min-h-screen bg-slate-900 text-white p-8">
+                        {/* HEADER WITH LOGO/LEAVE */}
+                        <div className="absolute top-4 left-4 z-50">
+                            <button onClick={handleLeave} className="hover:scale-110 transition-transform" title="Leave Auction">
+                                <img src={IPL_LOGO_URL} alt="IPL" className="h-12 w-auto drop-shadow-lg" />
+                            </button>
+                        </div>
+
+                        {showLeaveConfirm && <LeaveModal onConfirm={confirmLeave} onCancel={() => setShowLeaveConfirm(false)} />}
+
                         <div className="max-w-6xl mx-auto">
                             <div className="flex flex-col items-center mb-8">
                                 <h1 className="text-3xl font-display font-bold text-gray-400 mb-2">TEAM SELECTION</h1>
@@ -480,6 +497,11 @@
                 <div className="flex flex-col h-screen bg-slate-900 text-white overflow-hidden">
                     <header className="glass-panel p-3 flex justify-between items-center z-50 gap-2">
                         <div className="flex items-center gap-4 w-full md:w-auto">
+                            {/* LOGO BUTTON (LEAVE) */}
+                            <button onClick={handleLeave} className="hover:scale-110 transition-transform mr-2" title="Leave Auction">
+                                <img src={IPL_LOGO_URL} alt="IPL" className="h-10 w-auto" />
+                            </button>
+
                             <TeamLogo teamId={myTeam.name} size="h-12 w-12" />
                             <div><h1 className="font-display text-xl">{myTeam.name || "SPECTATOR"}</h1><p className="text-xs text-ipl-gold font-bold">OWNER: {gameState.users[socket.id].name.toUpperCase()}</p></div>
                         </div>
@@ -510,6 +532,7 @@
                             {notification && <div className="absolute top-16 left-1/2 -translate-x-1/2 z-[60] bg-gradient-to-r from-yellow-600 to-yellow-500 text-black px-8 py-3 rounded-full font-bold shadow-2xl animate-pulse border-2 border-white">{notification}</div>}
 
                             {showUserModal && <UserListModal users={gameState.users} onClose={() => setShowUserModal(false)} onKick={kickUser} onTransfer={transferAdmin} />}
+                            {showLeaveConfirm && <LeaveModal onConfirm={confirmLeave} onCancel={() => setShowLeaveConfirm(false)} />}
                             
                             {currentTab === 'AUCTION' && (<AuctionView gameState={gameState} socket={socket} myTeam={myTeam} placeBid={() => socket.emit('place_bid')} adminMoveOn={() => socket.emit('admin_move_on')} onOpenUserList={() => setShowUserModal(true)} markedIds={markedIds} lastSold={lastSold} activityLog={gameState.activity_log || []} />)}
                             {currentTab === 'PLAYER POOL' && (<PlayerPoolView players={gameState.players} markedIds={markedIds} onToggleMark={toggleMark} />)}
