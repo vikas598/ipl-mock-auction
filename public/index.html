@@ -33,7 +33,8 @@
         const socket = io();
         const formatCurrency = (val) => val >= 10000000 ? `₹${(val/10000000).toFixed(2)} Cr` : (val > 0 ? `₹${(val/100000).toFixed(2)} L` : '-');
 
-        const TEAM_LOGOS = {
+        // --- ONLINE LOGO LINKS ---
+       const TEAM_LOGOS = {
             'CSK': 'https://upload.wikimedia.org/wikipedia/en/thumb/2/2b/Chennai_Super_Kings_Logo.svg/300px-Chennai_Super_Kings_Logo.svg.png',
             'MI': 'https://upload.wikimedia.org/wikipedia/en/thumb/c/cd/Mumbai_Indians_Logo.svg/300px-Mumbai_Indians_Logo.svg.png',
             'RCB': 'https://upload.wikimedia.org/wikipedia/en/thumb/d/d4/Royal_Challengers_Bengaluru_Logo.svg/330px-Royal_Challengers_Bengaluru_Logo.svg.png',
@@ -69,19 +70,8 @@
                                 <div className="flex gap-2">
                                     {!user.is_admin && (
                                         <>
-                                            <button 
-                                                onClick={() => onTransfer(user.id)}
-                                                className="bg-blue-600/20 text-blue-400 hover:bg-blue-600 hover:text-white px-3 py-1 rounded text-xs font-bold border border-blue-600/50 transition-colors"
-                                                title="Make Admin"
-                                            >
-                                                👑 ADMIN
-                                            </button>
-                                            <button 
-                                                onClick={() => onKick(user.id)}
-                                                className="bg-red-600/20 text-red-500 hover:bg-red-600 hover:text-white px-3 py-1 rounded text-xs font-bold border border-red-600/50 transition-colors"
-                                            >
-                                                ❌
-                                            </button>
+                                            <button onClick={() => onTransfer(user.id)} className="bg-blue-600/20 text-blue-400 hover:bg-blue-600 hover:text-white px-3 py-1 rounded text-xs font-bold border border-blue-600/50 transition-colors" title="Make Admin">👑 ADMIN</button>
+                                            <button onClick={() => onKick(user.id)} className="bg-red-600/20 text-red-500 hover:bg-red-600 hover:text-white px-3 py-1 rounded text-xs font-bold border border-red-600/50 transition-colors">❌</button>
                                         </>
                                     )}
                                     {user.is_admin && <span className="text-xs bg-green-900 text-green-400 px-2 py-1 rounded border border-green-700">HOST</span>}
@@ -114,7 +104,16 @@
         const PlayerPoolView = ({ players }) => {
             const [search, setSearch] = React.useState("");
             const [roleFilter, setRoleFilter] = React.useState("All");
-            const filteredPlayers = players.filter(p => p.name.toLowerCase().includes(search.toLowerCase()) && (roleFilter === "All" || p.role === roleFilter));
+            
+            // FIX: Added .sort() at the end to randomize the display order (Alphabetical)
+            // This prevents users from seeing who is "Next" in the auction queue.
+            const filteredPlayers = players
+                .filter(p => 
+                    p.name.toLowerCase().includes(search.toLowerCase()) && 
+                    (roleFilter === "All" || p.role === roleFilter)
+                )
+                .sort((a, b) => a.name.localeCompare(b.name)); // Sorts A-Z
+
             return (
                 <div className="p-4 max-w-6xl mx-auto h-full flex flex-col">
                     <div className="flex gap-4 mb-4">
@@ -253,6 +252,7 @@
             const [error, setError] = React.useState("");
             const [isConnected, setIsConnected] = React.useState(socket.connected);
             const [showUserModal, setShowUserModal] = React.useState(false);
+            const [copied, setCopied] = React.useState(false); // NEW STATE FOR COPY FEEDBACK
 
             React.useEffect(() => {
                 socket.on('connect', () => setIsConnected(true));
@@ -273,6 +273,13 @@
             const startGame = () => socket.emit('admin_start_game');
             const kickUser = (id) => socket.emit('admin_kick_user', id);
             const transferAdmin = (id) => socket.emit('admin_transfer_role', id);
+
+            // NEW COPY FUNCTION
+            const handleCopyCode = () => {
+                navigator.clipboard.writeText(gameState.code);
+                setCopied(true);
+                setTimeout(() => setCopied(false), 2000);
+            };
 
             if (view === 'LANDING' || view === 'CREATE_FORM' || view === 'JOIN_FORM') {
                  const isForm = view !== 'LANDING';
@@ -309,7 +316,19 @@
                 return (
                     <div className="min-h-screen bg-slate-900 text-white p-8">
                         <div className="max-w-6xl mx-auto">
-                            <h1 className="text-3xl font-display font-bold text-ipl-gold mb-4">TEAM SELECTION <span className="text-white text-sm ml-4">Code: {gameState.code}</span></h1>
+                            {/* UPDATED HEADER: BIG CODE + COPY BUTTON */}
+                            <div className="flex flex-col items-center mb-8">
+                                <h1 className="text-3xl font-display font-bold text-gray-400 mb-2">TEAM SELECTION</h1>
+                                <button onClick={handleCopyCode} className="bg-slate-800 border-2 border-ipl-gold rounded-xl p-4 flex items-center gap-4 hover:bg-slate-700 transition-all group shadow-xl">
+                                    <span className="text-5xl font-mono font-bold text-white tracking-widest">{gameState.code}</span>
+                                    <div className="flex flex-col items-center">
+                                        <span className="text-ipl-gold text-sm font-bold uppercase bg-ipl-gold/10 px-2 py-1 rounded">
+                                            {copied ? "COPIED! ✓" : "CLICK TO COPY"}
+                                        </span>
+                                    </div>
+                                </button>
+                            </div>
+
                             <div className="grid grid-cols-2 md:grid-cols-5 gap-4 mb-8">
                                 {IPL_TEAMS.map(team => (
                                     <button key={team.id} disabled={takenTeams.includes(team.id)} onClick={() => claimTeam(team.id)} className={`p-6 rounded-xl border-2 flex flex-col items-center gap-3 transition-all ${myUser.team_id === team.id ? 'border-green-500 bg-slate-800 scale-105' : takenTeams.includes(team.id) ? 'opacity-50 cursor-not-allowed' : 'border-slate-700 hover:border-ipl-gold'}`}>
@@ -318,7 +337,7 @@
                                     </button>
                                 ))}
                             </div>
-                            {myUser.is_admin && <button onClick={startGame} disabled={!myUser.team_id} className="bg-green-600 px-8 py-3 rounded font-bold">START AUCTION</button>}
+                            {myUser.is_admin && <div className="flex justify-center"><button onClick={startGame} disabled={!myUser.team_id} className="bg-green-600 px-12 py-4 rounded-xl font-bold text-xl shadow-lg hover:scale-105 transition-transform">START AUCTION ➔</button></div>}
                         </div>
                     </div>
                 );
