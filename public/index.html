@@ -160,6 +160,67 @@
             );
         };
 
+        // --- NEW COMPONENT: AI SMART SCOUT ---
+        const SmartScout = ({ myTeam, currentPlayer, currentBid }) => {
+            if (!myTeam || !currentPlayer) return null;
+
+            const stats = getSquadStats(myTeam.players || []);
+            const budgetPercent = (currentBid / myTeam.purse) * 100;
+            const multiplier = currentBid / currentPlayer.base_price;
+            
+            let message = "Analyzing strategy...";
+            let color = "text-gray-400";
+            let icon = "🤖";
+
+            // 1. ROLE CHECK
+            const roleCount = stats[currentPlayer.role === 'Wicket-keeper' ? 'wk' : (currentPlayer.role === 'All-rounder' ? 'allRounder' : currentPlayer.role.toLowerCase())];
+            
+            if (roleCount === 0) {
+                message = `MUST BUY! You have 0 ${currentPlayer.role}s.`;
+                color = "text-green-400";
+                icon = "🔥";
+            } else if (roleCount > 6) {
+                message = `Careful! You already have ${roleCount} ${currentPlayer.role}s.`;
+                color = "text-orange-400";
+                icon = "⚠️";
+            }
+            
+            // 2. PURSE CHECK
+            else if (budgetPercent > 25) {
+                message = `HIGH RISK! This bid is ${budgetPercent.toFixed(0)}% of your remaining purse.`;
+                color = "text-red-400";
+                icon = "💸";
+            }
+            
+            // 3. OVERSEAS CHECK
+            else if (currentPlayer.nationality === 'Overseas' && stats.overseas >= 7) {
+                message = `Alert: You only have 1 Overseas slot left!`;
+                color = "text-yellow-400";
+                icon = "✈️";
+            }
+
+            // 4. VALUE CHECK
+            else if (multiplier > 8) {
+                message = `Inflated Price! ${multiplier.toFixed(1)}x base price.`;
+                color = "text-red-300";
+                icon = "📈";
+            } else if (multiplier < 2) {
+                message = "Good Value. Bid to steal this player.";
+                color = "text-blue-300";
+                icon = "💡";
+            }
+
+            return (
+                <div className="mt-4 bg-slate-900/80 border border-indigo-500/50 p-3 rounded-lg flex items-start gap-3 shadow-[0_0_15px_rgba(99,102,241,0.2)] animate-pulse">
+                    <div className="text-2xl">{icon}</div>
+                    <div>
+                        <p className="text-xs text-indigo-400 font-bold uppercase tracking-wider">Smart Scout AI</p>
+                        <p className={`text-sm font-medium ${color}`}>{message}</p>
+                    </div>
+                </div>
+            );
+        };
+
         const AuctionView = ({ gameState, socket, myTeam, placeBid, adminMoveOn, onOpenUserList }) => {
             const currentPlayer = gameState.players[gameState.current_player_index];
             const isAdmin = gameState.users[socket.id]?.is_admin;
@@ -209,10 +270,14 @@
                                             {currentPlayer.prev_team && currentPlayer.prev_team !== '-' && <span>Prev: <span className="text-white font-bold">{currentPlayer.prev_team}</span></span>}
                                         </div>
                                     </div>
-                                    <div className="bg-black/30 p-4 rounded-xl mb-6 flex justify-between items-center border border-white/10 backdrop-blur-sm">
+                                    <div className="bg-black/30 p-4 rounded-xl mb-4 flex justify-between items-center border border-white/10 backdrop-blur-sm">
                                         <div><p className="text-xs text-gray-300 uppercase">Current Bid</p><p className="text-3xl font-mono font-bold text-white drop-shadow">{formatCurrency(gameState.current_bid)}</p>{gameState.current_top_bidder_team && (<div className="flex items-center gap-2 mt-1"><TeamLogo teamId={gameState.current_top_bidder_team} size="h-6 w-6" /><span className="text-xs font-bold text-ipl-gold bg-black/50 px-2 py-0.5 rounded">{gameState.current_top_bidder_team}</span></div>)}</div><div className="text-right"><p className="text-xs text-gray-300 uppercase">Next</p><p className="text-xl font-mono text-gray-200">{formatCurrency(nextMin)}</p></div>
                                     </div>
-                                    <div className="flex flex-col gap-3">
+
+                                    {/* --- SMART SCOUT IS HERE --- */}
+                                    <SmartScout myTeam={myTeam} currentPlayer={currentPlayer} currentBid={gameState.current_bid} />
+
+                                    <div className="flex flex-col gap-3 mt-4">
                                         {isHighest ? <button disabled className="w-full bg-slate-800/80 py-4 rounded-xl font-bold text-gray-400 cursor-not-allowed border border-white/10">Highest Bidder</button> : <button onClick={handleBid} disabled={!canAfford} className={`w-full py-4 rounded-xl font-bold text-xl transition-all shadow-lg border border-white/10 ${!canAfford ? "bg-slate-800 text-gray-600" : isInterested ? "bg-green-600 hover:bg-green-500 text-white hover:scale-105" : "bg-slate-600 text-gray-300"}`}>BID {formatCurrency(nextMin)}</button>}
                                         {isInterested && !isHighest && <button onClick={handleNotInterested} className="text-white/60 text-xs font-bold hover:text-white uppercase tracking-widest">Not Interested</button>}
                                     </div>
