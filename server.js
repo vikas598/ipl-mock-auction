@@ -12,13 +12,11 @@ app.use(express.static('public'));
 const ROOMS = {}; 
 const ROOM_TIMERS = {}; 
 
-// --- CONFIG ---
 const STARTING_PURSE = 1200000000; 
 const DEFAULT_TIMER_DURATION = 60; 
 const BID_RESET_TIMER = 20;
 const MAX_OVERSEAS = 8; 
 
-// --- HELPER: FISHER-YATES SHUFFLE ---
 function shuffleArray(array) {
     for (let i = array.length - 1; i > 0; i--) {
         const j = Math.floor(Math.random() * (i + 1));
@@ -106,7 +104,11 @@ function finalizeAndMoveOn(roomCode) {
             player.sold_price = room.current_bid;
             player.sold_to = winnerTeam.name;
             
-            resultMsg = `SOLD to ${winnerTeam.name} for ₹${(room.current_bid/10000000).toFixed(2)} Cr`;
+            const soldAmt = room.current_bid >= 10000000 
+                ? `${(room.current_bid/10000000).toFixed(2)} Cr` 
+                : `${(room.current_bid/100000).toFixed(2)} L`;
+
+            resultMsg = `SOLD to ${winnerTeam.name} for ₹${soldAmt}`;
             io.to(roomCode).emit('player_sold', { winner: winnerTeam.name, amount: room.current_bid });
         } else {
             player.status = 'UNSOLD';
@@ -117,6 +119,7 @@ function finalizeAndMoveOn(roomCode) {
         addSystemLog(room, `${player.name}: ${resultMsg}`);
         io.to(roomCode).emit('state_update', room);
 
+        // AUTO-MOVE NEXT (5 Second Delay)
         setTimeout(() => {
             const r = ROOMS[roomCode];
             if (!r) return;
@@ -130,19 +133,22 @@ function finalizeAndMoveOn(roomCode) {
 
             if (r.current_player_index < r.players.length) {
                 io.to(roomCode).emit('new_player_nominated', r);
+                startRoomTimer(roomCode); // <--- AUTO START TIMER FOR NEXT PLAYER
             } else {
                 io.to(roomCode).emit('state_update', r); 
             }
         }, 5000); 
     } else {
+        // FIRST PLAYER START
         room.current_player_index++;
         io.to(roomCode).emit('new_player_nominated', room);
+        startRoomTimer(roomCode); // <--- AUTO START TIMER FOR FIRST PLAYER
     }
 }
 
 function checkAutoSellCondition(room) {
     if (room.status === 'SOLD_PAUSE') return;
-    const activeTeams = Object.values(room.users).filter(u => u.team_id !== null && u.connected); // Check connected only
+    const activeTeams = Object.values(room.users).filter(u => u.team_id !== null && u.connected); 
     if (activeTeams.length < 2) return; 
 
     const winnerId = room.current_top_bidder;
@@ -190,52 +196,22 @@ io.on('connection', (socket) => {
         socket.emit('room_joined', { code, is_admin: true, state: ROOMS[code] });
     });
 
-    // --- SMART JOIN (RECONNECT LOGIC) ---
     socket.on('join_room', ({ code, userName }) => {
         const roomCode = code.toUpperCase();
         const room = ROOMS[roomCode];
-        
         if (!room) return socket.emit('error_msg', "Invalid Room Code");
-
-        // CHECK: DOES THIS USER ALREADY EXIST? (Case Insensitive)
-        const existingUserKey = Object.keys(room.users).find(key => 
-            room.users[key].name.toLowerCase() === userName.toLowerCase()
-        );
-
+        
+        const existingUserKey = Object.keys(room.users).find(key => room.users[key].name.toLowerCase() === userName.toLowerCase());
         if (existingUserKey) {
-            // --- RECONNECTION LOGIC ---
-            console.log(`♻️ User ${userName} reconnected. Swapping ${existingUserKey} -> ${socket.id}`);
-            
-            // 1. Copy old data
             const oldUserData = room.users[existingUserKey];
-            
-            // 2. Create new user entry with old data but NEW ID
-            room.users[socket.id] = {
-                ...oldUserData,
-                id: socket.id,
-                connected: true
-            };
-
-            // 3. Update Team Ownership if they had a team
+            room.users[socket.id] = { ...oldUserData, id: socket.id, connected: true };
             if (oldUserData.team_id) {
                 const team = Object.values(room.teams).find(t => t.id === existingUserKey);
-                if (team) {
-                    delete room.teams[existingUserKey]; // Remove old key
-                    team.id = socket.id; // Update owner ID
-                    room.teams[socket.id] = team; // Add new key
-                }
+                if (team) { delete room.teams[existingUserKey]; team.id = socket.id; room.teams[socket.id] = team; }
             }
-
-            // 4. Update Auction State if they were top bidder
-            if (room.current_top_bidder === existingUserKey) {
-                room.current_top_bidder = socket.id;
-            }
-
-            // 5. Delete old user entry (prevent duplicates)
+            if (room.current_top_bidder === existingUserKey) room.current_top_bidder = socket.id;
             delete room.users[existingUserKey];
-
         } else {
-            // --- NEW USER JOIN ---
             if (room.status !== 'LOBBY') return socket.emit('error_msg', "Auction started! Cannot join as new player.");
             room.users[socket.id] = { id: socket.id, name: userName, is_admin: false, team_id: null, is_interested: true, connected: true };
         }
@@ -249,8 +225,6 @@ io.on('connection', (socket) => {
     socket.on('claim_team', (teamId) => {
         const room = ROOMS[socket.roomCode];
         if (!room) return;
-        
-        // Prevent claiming if taken (unless it's the same user reclaiming)
         const existingOwner = Object.values(room.users).find(u => u.team_id === teamId);
         if(existingOwner && existingOwner.id !== socket.id) return socket.emit('error_msg', "Team already taken!");
         
@@ -266,7 +240,6 @@ io.on('connection', (socket) => {
         io.to(room.code).emit('state_update', room);
     });
 
-    // --- CHAT LOGIC ---
     socket.on('send_chat_message', (text) => {
         const room = ROOMS[socket.roomCode];
         const user = room?.users[socket.id];
@@ -285,7 +258,6 @@ io.on('connection', (socket) => {
         io.to(room.code).emit('chat_update', msg);
     });
 
-    // ... (Admin Actions) ...
     socket.on('admin_update_settings', (newSettings) => {
         const room = ROOMS[socket.roomCode];
         if (!room || !room.users[socket.id]?.is_admin) return;
@@ -300,18 +272,13 @@ io.on('connection', (socket) => {
             io.to(room.code).emit('state_update', room);
         }
     });
+    
+    // Kept for internal logic, but not called from UI
     socket.on('admin_start_timer', () => {
         const room = ROOMS[socket.roomCode];
         if (room?.users[socket.id]?.is_admin) startRoomTimer(room.code);
     });
-    socket.on('admin_stop_timer', () => {
-        const room = ROOMS[socket.roomCode];
-        if (room?.users[socket.id]?.is_admin) {
-            clearInterval(ROOM_TIMERS[room.code]);
-            room.is_timer_running = false;
-            io.to(room.code).emit('state_update', room);
-        }
-    });
+    
     socket.on('admin_move_on', () => finalizeAndMoveOn(socket.roomCode));
     
     socket.on('admin_kick_user', (targetUserId) => {
@@ -362,13 +329,13 @@ io.on('connection', (socket) => {
         room.timer_seconds = BID_RESET_TIMER; 
         resetInterest(room);
 
-        addSystemLog(room, `${team.name} bid ₹${(nextBid/100000).toFixed(0)}L`);
+        const amountStr = nextBid >= 10000000 ? `₹${(nextBid/10000000).toFixed(2)} Cr` : `₹${(nextBid/100000).toFixed(2)} L`;
+        addSystemLog(room, `${team.name} bid ${amountStr}`);
 
         io.to(room.code).emit('bid_update', { amount: nextBid, bidder_name: team.name });
         io.to(room.code).emit('timer_update', room.timer_seconds); 
     });
 
-    // --- DISCONNECT HANDLING ---
     socket.on('disconnect', () => {
         const roomCode = socket.roomCode;
         if (!roomCode || !ROOMS[roomCode]) return;
@@ -376,19 +343,23 @@ io.on('connection', (socket) => {
         const user = room.users[socket.id];
         if (!user) return;
 
-        // Mark as disconnected but DON'T delete yet
         user.connected = false;
 
-        // Auto-Promote Admin if they left
+        if (room.status === 'LOBBY') {
+            if (user.team_id && room.teams[socket.id]) delete room.teams[socket.id];
+            delete room.users[socket.id];
+        }
         if (user.is_admin) {
-            const remainingUsers = Object.values(room.users).filter(u => u.connected); // Only promote active users
+            const remainingUsers = Object.values(room.users).filter(u => u.connected);
             if (remainingUsers.length > 0) {
                 remainingUsers[0].is_admin = true;
                 io.to(roomCode).emit('error_msg', `Admin left. ${remainingUsers[0].name} is now Admin.`);
+            } else {
+                delete ROOMS[roomCode];
+                if (ROOM_TIMERS[roomCode]) clearInterval(ROOM_TIMERS[roomCode]);
+                return;
             }
         }
-        
-        // Broadcast update (so others see they are gone, maybe grey them out in list)
         io.to(roomCode).emit('state_update', room);
     });
 });

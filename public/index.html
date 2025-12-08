@@ -15,14 +15,16 @@
             theme: {
                 extend: {
                     fontFamily: { sans: ['Inter', 'sans-serif'], display: ['Oswald', 'sans-serif'] },
-                    colors: { ipl: { gold: '#fbbf24', blue: '#1e3a8a' } }
+                    colors: { ipl: { gold: '#fbbf24', blue: '#1e3a8a' } },
+                    animation: { 'fade-in': 'fadeIn 0.3s ease-out' },
+                    keyframes: { fadeIn: { '0%': { opacity: '0', transform: 'translateY(10px)' }, '100%': { opacity: '1', transform: 'translateY(0)' } } }
                 }
             }
         }
     </script>
     <style>
         body { background-color: #0b0f19; color: white; }
-        .glass-panel { background: rgba(30, 41, 59, 0.8); backdrop-filter: blur(10px); border: 1px solid rgba(255, 255, 255, 0.1); }
+        .glass-panel { background: rgba(30, 41, 59, 0.9); backdrop-filter: blur(10px); border: 1px solid rgba(255, 255, 255, 0.1); }
         .no-scrollbar::-webkit-scrollbar { display: none; }
         .stamp { transform: rotate(-12deg); border: 0.5rem solid; mask-image: url('https://s3-us-west-2.amazonaws.com/s.cdpn.io/8399/grunge.png'); mask-size: 944px 604px; mix-blend-mode: normal; }
     </style>
@@ -53,25 +55,56 @@
             return <img src={url} alt={teamId} className={`${size} object-contain drop-shadow-md hover:scale-110 transition-transform duration-300`} />;
         };
 
-        // ... (ChatWidget, UserListModal, getSquadStats, NavBar kept same as previous) ...
-        const ChatWidget = ({ chatMessages, activityLog }) => {
-            const [tab, setTab] = React.useState('CHAT');
+        const ChatWidget = ({ chatMessages, isOpen, onClose }) => {
             const [input, setInput] = React.useState("");
             const messagesEndRef = React.useRef(null);
-            const scrollToBottom = () => { messagesEndRef.current?.scrollIntoView({ behavior: "smooth" }); };
-            React.useEffect(scrollToBottom, [chatMessages, activityLog, tab]);
-            const sendMessage = (e) => { e.preventDefault(); if(input.trim()) { socket.emit('send_chat_message', input); setInput(""); } };
+            
+            React.useEffect(() => { 
+                if (isOpen || window.innerWidth >= 1024) messagesEndRef.current?.scrollIntoView({ behavior: "smooth" }); 
+            }, [chatMessages, isOpen]);
+
+            const sendMessage = (e) => {
+                e.preventDefault();
+                if(input.trim()) { socket.emit('send_chat_message', input); setInput(""); }
+            };
+
             return (
-                <div className="hidden lg:flex flex-col w-80 glass-panel border-l border-slate-700 h-full">
-                    <div className="flex border-b border-slate-700">
-                        <button onClick={() => setTab('CHAT')} className={`flex-1 py-3 font-bold text-xs uppercase ${tab === 'CHAT' ? 'bg-slate-800 text-ipl-gold border-b-2 border-ipl-gold' : 'text-gray-400 hover:text-white'}`}>Live Chat</button>
-                        <button onClick={() => setTab('HISTORY')} className={`flex-1 py-3 font-bold text-xs uppercase ${tab === 'HISTORY' ? 'bg-slate-800 text-ipl-gold border-b-2 border-ipl-gold' : 'text-gray-400 hover:text-white'}`}>History Log</button>
+                <div className={`fixed z-[100] bg-slate-900 border-l border-slate-700 flex flex-col shadow-2xl transition-all duration-300 lg:static lg:w-80 lg:h-full lg:translate-y-0 ${isOpen ? 'bottom-20 right-4 w-80 h-96 rounded-xl border border-slate-600' : 'translate-y-[200%] opacity-0 lg:opacity-100 lg:translate-y-0'}`}>
+                    <div className="flex justify-between items-center p-3 border-b border-slate-700 bg-slate-800 rounded-t-xl lg:rounded-none">
+                        <h3 className="font-bold text-ipl-gold text-xs uppercase tracking-widest">Live Chat</h3>
+                        <button onClick={onClose} className="lg:hidden text-gray-400 hover:text-white">✕</button>
                     </div>
-                    <div className="flex-1 overflow-y-auto p-4 space-y-3 no-scrollbar">
-                        {tab === 'CHAT' ? chatMessages.map((msg) => ( <div key={msg.id} className="text-sm"><span className="text-xs text-gray-500 mr-2">[{msg.time}]</span><span className="font-bold text-blue-400">{msg.user}:</span><span className="text-gray-200 ml-1">{msg.text}</span></div> )) : activityLog.map((log, i) => ( <div key={i} className="text-xs border-l-2 border-slate-600 pl-2 py-1"><p className="text-gray-300 font-mono">{log.text}</p></div> ))}
+                    <div className="flex-1 overflow-y-auto p-3 space-y-2 bg-black/20 no-scrollbar">
+                        {chatMessages.length === 0 && <p className="text-gray-600 text-xs text-center mt-4">No messages yet...</p>}
+                        {chatMessages.map((msg) => (
+                            <div key={msg.id} className="text-xs animate-fade-in bg-slate-800/50 p-2 rounded">
+                                <div className="flex justify-between text-[10px] text-gray-500 mb-1"><span className={`font-bold ${msg.user === 'Admin' ? 'text-red-400' : 'text-blue-400'}`}>{msg.user}</span><span>{msg.time}</span></div>
+                                <p className="text-gray-200 break-words">{msg.text}</p>
+                            </div>
+                        ))}
                         <div ref={messagesEndRef} />
                     </div>
-                    {tab === 'CHAT' && <form onSubmit={sendMessage} className="p-3 border-t border-slate-700"><input className="w-full bg-slate-900 border border-slate-600 rounded px-3 py-2 text-sm text-white focus:border-ipl-gold outline-none" placeholder="Type a message..." value={input} onChange={e => setInput(e.target.value)} /></form>}
+                    <form onSubmit={sendMessage} className="p-2 border-t border-slate-700 bg-slate-800 rounded-b-xl lg:rounded-none">
+                        <div className="flex gap-2"><input className="flex-1 bg-slate-900 border border-slate-600 rounded px-2 py-2 text-xs text-white focus:border-ipl-gold outline-none" placeholder="Type..." value={input} onChange={e => setInput(e.target.value)} /><button type="submit" className="bg-blue-600 text-white px-3 rounded font-bold text-xs">➤</button></div>
+                    </form>
+                </div>
+            );
+        };
+
+        const HistoryLog = ({ logs }) => {
+            const scrollRef = React.useRef(null);
+            React.useEffect(() => { scrollRef.current?.scrollTo(0, 0); }, [logs]);
+
+            return (
+                <div className="mt-4 w-full bg-black/40 border-t border-slate-700 rounded-xl overflow-hidden flex flex-col">
+                    <div className="bg-slate-800/80 px-4 py-2 text-[10px] font-bold text-gray-400 uppercase tracking-widest flex justify-between"><span>Bid History</span><span>Live Updates</span></div>
+                    <div ref={scrollRef} className="h-32 overflow-y-auto p-2 space-y-1 no-scrollbar flex flex-col-reverse">
+                        {logs.slice().reverse().map((log, i) => (
+                            <div key={i} className="text-xs border-b border-white/5 py-1.5 px-2 animate-fade-in flex gap-2">
+                                <span className="text-gray-300 font-medium">{log.text}</span>
+                            </div>
+                        ))}
+                    </div>
                 </div>
             );
         };
@@ -79,19 +112,13 @@
         const UserListModal = ({ users, onClose, onKick, onTransfer }) => (
             <div className="fixed inset-0 bg-black/80 z-[100] flex items-center justify-center p-4">
                 <div className="bg-slate-900 border border-slate-700 w-full max-w-md rounded-xl p-6 shadow-2xl">
-                    <div className="flex justify-between items-center mb-6">
-                        <h3 className="text-xl font-bold text-ipl-gold">MANAGE PARTICIPANTS</h3>
-                        <button onClick={onClose} className="text-gray-400 hover:text-white">✕</button>
-                    </div>
+                    <div className="flex justify-between items-center mb-6"><h3 className="text-xl font-bold text-ipl-gold">MANAGE PARTICIPANTS</h3><button onClick={onClose} className="text-gray-400 hover:text-white">✕</button></div>
                     <div className="space-y-3 max-h-96 overflow-y-auto">
                         {Object.values(users).map(user => (
                             <div key={user.id} className="flex justify-between items-center bg-slate-800 p-3 rounded border border-slate-700">
                                 <div><p className="font-bold">{user.name} {user.id === socket.id && '(You)'}</p><p className="text-xs text-blue-400">{user.team_id || 'No Team'}</p></div>
                                 <div className="flex gap-2">
-                                    {!user.is_admin && (
-                                        <><button onClick={() => onTransfer(user.id)} className="bg-blue-600/20 text-blue-400 hover:bg-blue-600 hover:text-white px-3 py-1 rounded text-xs font-bold border border-blue-600/50" title="Make Admin">👑 ADMIN</button>
-                                        <button onClick={() => onKick(user.id)} className="bg-red-600/20 text-red-500 hover:bg-red-600 hover:text-white px-3 py-1 rounded text-xs font-bold border border-red-600/50">❌</button></>
-                                    )}
+                                    {!user.is_admin && (<><button onClick={() => onTransfer(user.id)} className="bg-blue-600/20 text-blue-400 hover:bg-blue-600 hover:text-white px-3 py-1 rounded text-xs font-bold border border-blue-600/50" title="Make Admin">👑 ADMIN</button><button onClick={() => onKick(user.id)} className="bg-red-600/20 text-red-500 hover:bg-red-600 hover:text-white px-3 py-1 rounded text-xs font-bold border border-red-600/50">❌</button></>)}
                                     {user.is_admin && <span className="text-xs bg-green-900 text-green-400 px-2 py-1 rounded border border-green-700">HOST</span>}
                                 </div>
                             </div>
@@ -118,30 +145,6 @@
                 ))}
             </div>
         );
-
-        // ... (SmartScout, PlayerPoolView, SquadView, AuctionView kept same) ...
-        const SmartScout = ({ myTeam, currentPlayer, currentBid }) => {
-            if (!myTeam || !currentPlayer) return null;
-            const stats = getSquadStats(myTeam.players || []);
-            const budgetPercent = (currentBid / myTeam.purse) * 100;
-            const multiplier = currentBid / currentPlayer.base_price;
-            let message = "Analyzing strategy...", color = "text-gray-400", icon = "🤖";
-            const roleCount = stats[currentPlayer.role === 'Wicket-keeper' ? 'wk' : (currentPlayer.role === 'All-rounder' ? 'allRounder' : currentPlayer.role.toLowerCase())];
-            
-            if (roleCount === 0) { message = `MUST BUY! You have 0 ${currentPlayer.role}s.`; color = "text-green-400"; icon = "🔥"; }
-            else if (roleCount > 6) { message = `Careful! You already have ${roleCount} ${currentPlayer.role}s.`; color = "text-orange-400"; icon = "⚠️"; }
-            else if (budgetPercent > 25) { message = `HIGH RISK! This bid is ${budgetPercent.toFixed(0)}% of your remaining purse.`; color = "text-red-400"; icon = "💸"; }
-            else if (currentPlayer.nationality === 'Overseas' && stats.overseas >= 7) { message = `Alert: You only have 1 Overseas slot left!`; color = "text-yellow-400"; icon = "✈️"; }
-            else if (multiplier > 8) { message = `Inflated Price! ${multiplier.toFixed(1)}x base price.`; color = "text-red-300"; icon = "📈"; }
-            else if (multiplier < 2) { message = "Good Value. Bid to steal this player."; color = "text-blue-300"; icon = "💡"; }
-
-            return (
-                <div className="mt-4 bg-slate-900/80 border border-indigo-500/50 p-3 rounded-lg flex items-start gap-3 shadow-[0_0_15px_rgba(99,102,241,0.2)] animate-pulse">
-                    <div className="text-2xl">{icon}</div>
-                    <div><p className="text-xs text-indigo-400 font-bold uppercase tracking-wider">Smart Scout AI</p><p className={`text-sm font-medium ${color}`}>{message}</p></div>
-                </div>
-            );
-        };
 
         const PlayerPoolView = ({ players, markedIds, onToggleMark }) => {
             const [search, setSearch] = React.useState("");
@@ -201,7 +204,7 @@
             );
         };
 
-        const AuctionView = ({ gameState, socket, myTeam, placeBid, adminMoveOn, onOpenUserList, markedIds, lastSold }) => {
+        const AuctionView = ({ gameState, socket, myTeam, placeBid, adminMoveOn, onOpenUserList, markedIds, lastSold, activityLog }) => {
             const currentPlayer = gameState.players[gameState.current_player_index];
             const isAdmin = gameState.users[socket.id]?.is_admin;
             const [localTimer, setLocalTimer] = React.useState(gameState.timer_seconds);
@@ -264,11 +267,13 @@
                                         <div className="bg-black/30 p-4 rounded-xl mb-4 flex justify-between items-center border border-white/10 backdrop-blur-sm">
                                             <div><p className="text-xs text-gray-300 uppercase">Current Bid</p><p className="text-3xl font-mono font-bold text-white drop-shadow">{formatCurrency(gameState.current_bid)}</p>{gameState.current_top_bidder_team && (<div className="flex items-center gap-2 mt-1"><TeamLogo teamId={gameState.current_top_bidder_team} size="h-6 w-6" /><span className="text-xs font-bold text-ipl-gold bg-black/50 px-2 py-0.5 rounded">{gameState.current_top_bidder_team}</span></div>)}</div><div className="text-right"><p className="text-xs text-gray-300 uppercase">Next</p><p className="text-xl font-mono text-gray-200">{formatCurrency(nextMin)}</p></div>
                                         </div>
-                                        <SmartScout myTeam={myTeam} currentPlayer={currentPlayer} currentBid={gameState.current_bid} />
+                                        
                                         <div className="flex flex-col gap-3 mt-4">
                                             {isHighest ? <button disabled className="w-full bg-slate-800/80 py-4 rounded-xl font-bold text-gray-400 cursor-not-allowed border border-white/10">Highest Bidder</button> : <button onClick={handleBid} disabled={!canAfford} className={`w-full py-4 rounded-xl font-bold text-xl transition-all shadow-lg border border-white/10 ${!canAfford ? "bg-slate-800 text-gray-600" : isInterested ? "bg-green-600 hover:bg-green-500 text-white hover:scale-105" : "bg-slate-600 text-gray-300"}`}>BID {formatCurrency(nextMin)}</button>}
                                             {isInterested && !isHighest && <button onClick={handleNotInterested} className="text-white/60 text-xs font-bold hover:text-white uppercase tracking-widest">Not Interested</button>}
                                         </div>
+
+                                        <HistoryLog logs={activityLog} />
                                     </div>
                                 </div>
                             ) : (<div className="text-center opacity-50"><h2 className="text-2xl font-bold">PAUSED</h2></div>)}
@@ -276,12 +281,10 @@
                     </main>
                     {isAdmin && (
                         <div className="p-4 bg-slate-800 border-t border-slate-700 grid grid-cols-2 gap-4 shrink-0 z-50">
+                            {/* --- UPDATED ADMIN CONTROLS (Removed Timer Buttons) --- */}
                             <div className="flex flex-col gap-2">
-                                <div className="flex gap-2">
-                                    <button onClick={() => gameState.is_timer_running ? socket.emit('admin_stop_timer') : socket.emit('admin_start_timer')} className={`flex-1 py-2 rounded font-bold ${gameState.is_timer_running ? 'bg-orange-600' : 'bg-green-600'}`}>{gameState.is_timer_running ? 'STOP' : 'START'}</button>
-                                    <button onClick={onOpenUserList} className="bg-purple-600 px-4 rounded font-bold">👥</button>
-                                </div>
-                                <button onClick={adminMoveOn} className="bg-red-600 w-full py-2 rounded font-bold hover:bg-red-500">{currentPlayer ? "NEXT PLAYER >>" : "START AUCTION"}</button>
+                                <button onClick={onOpenUserList} className="bg-purple-600 px-4 py-2 rounded font-bold w-full">👥 Manage Users</button>
+                                <button onClick={adminMoveOn} className="bg-red-600 w-full py-2 rounded font-bold hover:bg-red-500 shadow-lg">{currentPlayer ? "FORCE SELL / NEXT >>" : "START AUCTION"}</button>
                             </div>
                             <div className="bg-slate-900 p-2 rounded text-xs grid grid-cols-2 gap-2">
                                 <div><label className="text-gray-500">Min Squad</label><input type="number" className="w-full bg-slate-800 border border-slate-700 p-1" value={settings.min_squad} onChange={e=>setSettings({...settings, min_squad: parseInt(e.target.value)})}/></div>
@@ -310,6 +313,10 @@
             const [copied, setCopied] = React.useState(false);
             const [lastSold, setLastSold] = React.useState(null); 
             
+            // --- NEW: State for Mobile Chat Toggle ---
+            const [showMobileChat, setShowMobileChat] = React.useState(false); 
+            const [unreadCount, setUnreadCount] = React.useState(0);
+
             const [markedIds, setMarkedIds] = React.useState(() => {
                 const saved = localStorage.getItem('markedPlayers');
                 return saved ? JSON.parse(saved) : [];
@@ -334,32 +341,38 @@
             React.useEffect(() => {
                 socket.on('connect', () => setIsConnected(true));
                 socket.on('disconnect', () => setIsConnected(false));
+                
                 socket.on('room_joined', (data) => { 
                     setGameState(data.state); setRoomCode(data.code); setView(data.state.status === 'LOBBY' ? 'LOBBY' : 'GAME'); 
                     localStorage.setItem('ipl_auction_session', JSON.stringify({ code: data.code, name: userName || data.state.users[socket.id].name }));
                 });
+                
                 socket.on('state_update', (state) => { setGameState(state); if(state.status === 'AUCTION' && view === 'LOBBY') setView('GAME'); });
+                
                 socket.on('new_player_nominated', (state) => { 
                     setGameState(state);
                     setLastSold(null); 
-                    const player = state.players[state.current_player_index];
-                    if (player && markedIds.includes(player.id)) {
-                        setNotification(`⭐ ATTENTION: Your marked player ${player.name} is up!`);
-                        setTimeout(() => setNotification(""), 5000);
-                    }
                 });
+
                 socket.on('bid_update', (data) => setGameState(prev => ({...prev, current_bid: data.amount, current_top_bidder_team: data.bidder_name})));
+                
                 socket.on('player_sold', (data) => {
-                    const player = gameState?.players[gameState?.current_player_index];
-                    if (player) setLastSold({ id: player.id, status: data.winner === 'UNSOLD' ? 'UNSOLD' : 'SOLD', winner: data.winner });
+                    setGameState(prev => {
+                        const player = prev?.players[prev?.current_player_index];
+                        if (player) setLastSold({ id: player.id, status: data.winner === 'UNSOLD' ? 'UNSOLD' : 'SOLD', winner: data.winner });
+                        return prev;
+                    });
                 });
+
                 socket.on('chat_update', (msg) => {
                     setGameState(prev => {
                         const newMsgs = [...(prev.chat_messages || []), msg];
                         if (newMsgs.length > 50) newMsgs.shift();
                         return { ...prev, chat_messages: newMsgs };
                     });
+                    if (!showMobileChat) setUnreadCount(c => c + 1);
                 });
+
                 socket.on('log_update', (log) => {
                     setGameState(prev => {
                         const newLogs = [...(prev.activity_log || []), log];
@@ -367,10 +380,33 @@
                         return { ...prev, activity_log: newLogs };
                     });
                 });
+
                 socket.on('error_msg', (msg) => { setError(msg); setTimeout(() => setError(""), 3000); });
                 socket.on('kicked_from_room', () => { alert("You have been kicked by the Admin."); localStorage.removeItem('ipl_auction_session'); window.location.reload(); });
-                return () => { socket.off('connect'); socket.off('disconnect'); }
-            }, [view, markedIds, gameState?.current_player_index]);
+
+                return () => { 
+                    socket.off('connect'); socket.off('disconnect'); 
+                    socket.off('room_joined'); socket.off('state_update');
+                    socket.off('new_player_nominated'); socket.off('bid_update');
+                    socket.off('player_sold'); socket.off('chat_update');
+                    socket.off('log_update'); socket.off('error_msg');
+                    socket.off('kicked_from_room');
+                }
+            }, []); 
+
+            React.useEffect(() => {
+                if(gameState?.players) {
+                    const player = gameState.players[gameState.current_player_index];
+                    if (player && markedIds.includes(player.id) && !lastSold) {
+                         setNotification(`⭐ ATTENTION: Your marked player ${player.name} is up!`);
+                         setTimeout(() => setNotification(""), 5000);
+                    }
+                }
+            }, [gameState?.current_player_index, markedIds]);
+
+            React.useEffect(() => {
+                if(gameState?.status === 'AUCTION' && view === 'LOBBY') setView('GAME');
+            }, [gameState?.status]);
 
             const handleCreate = () => { if(userName) socket.emit('create_room', userName); else setError("Enter Name"); };
             const handleJoin = () => { if(userName && roomCode) socket.emit('join_room', { code: roomCode, userName }); else setError("Fill fields"); };
@@ -379,6 +415,7 @@
             const kickUser = (id) => socket.emit('admin_kick_user', id);
             const transferAdmin = (id) => socket.emit('admin_transfer_role', id);
             const handleCopyCode = () => { navigator.clipboard.writeText(gameState.code); setCopied(true); setTimeout(() => setCopied(false), 2000); };
+            const openMobileChat = () => { setShowMobileChat(true); setUnreadCount(0); };
 
             if (view === 'LANDING' || view === 'CREATE_FORM' || view === 'JOIN_FORM') {
                  const isForm = view !== 'LANDING';
@@ -441,13 +478,13 @@
 
             return (
                 <div className="flex flex-col h-screen bg-slate-900 text-white overflow-hidden">
-                    <header className="glass-panel p-3 flex flex-col md:flex-row justify-between items-center z-50 gap-2">
+                    <header className="glass-panel p-3 flex justify-between items-center z-50 gap-2">
                         <div className="flex items-center gap-4 w-full md:w-auto">
                             <TeamLogo teamId={myTeam.name} size="h-12 w-12" />
                             <div><h1 className="font-display text-xl">{myTeam.name || "SPECTATOR"}</h1><p className="text-xs text-ipl-gold font-bold">OWNER: {gameState.users[socket.id].name.toUpperCase()}</p></div>
                         </div>
                         
-                        {/* --- SIMPLIFIED STATS HEADER --- */}
+                        {/* CLEAN STATS HEADER */}
                         {myTeam.players && (
                             <div className="flex gap-6 text-sm md:text-base font-bold text-gray-300 bg-slate-800 px-6 py-3 rounded-xl border border-slate-600 shadow-lg items-center">
                                 <span className="text-gray-500 uppercase tracking-widest text-[10px] font-bold">SQUAD:</span>
@@ -474,13 +511,14 @@
 
                             {showUserModal && <UserListModal users={gameState.users} onClose={() => setShowUserModal(false)} onKick={kickUser} onTransfer={transferAdmin} />}
                             
-                            {currentTab === 'AUCTION' && (<AuctionView gameState={gameState} socket={socket} myTeam={myTeam} placeBid={() => socket.emit('place_bid')} adminMoveOn={() => socket.emit('admin_move_on')} onOpenUserList={() => setShowUserModal(true)} markedIds={markedIds} lastSold={lastSold} />)}
+                            {currentTab === 'AUCTION' && (<AuctionView gameState={gameState} socket={socket} myTeam={myTeam} placeBid={() => socket.emit('place_bid')} adminMoveOn={() => socket.emit('admin_move_on')} onOpenUserList={() => setShowUserModal(true)} markedIds={markedIds} lastSold={lastSold} activityLog={gameState.activity_log || []} />)}
                             {currentTab === 'PLAYER POOL' && (<PlayerPoolView players={gameState.players} markedIds={markedIds} onToggleMark={toggleMark} />)}
                             {currentTab === 'SQUADS' && (<SquadView teams={gameState.teams} currentUserId={socket.id} />)}
                         </div>
 
-                        {/* RIGHT SIDEBAR: CHAT & HISTORY */}
-                        <ChatWidget chatMessages={gameState.chat_messages || []} activityLog={gameState.activity_log || []} />
+                        {/* --- CHAT COMPONENTS --- */}
+                        <ChatWidget chatMessages={gameState.chat_messages || []} isOpen={showMobileChat} onClose={() => setShowMobileChat(false)} />
+                        <button onClick={openMobileChat} className="lg:hidden fixed bottom-6 right-4 z-50 bg-blue-600 text-white p-4 rounded-full shadow-2xl border-2 border-white/20 active:scale-95 transition-transform">💬{unreadCount > 0 && <span className="absolute -top-1 -right-1 bg-red-600 text-white text-[10px] w-5 h-5 flex items-center justify-center rounded-full border border-white">{unreadCount}</span>}</button>
                     </div>
                 </div>
             );
