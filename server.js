@@ -17,6 +17,7 @@ const DEFAULT_TIMER_DURATION = 60;
 const BID_RESET_TIMER = 20;
 const MAX_OVERSEAS = 8; 
 
+// --- HELPER: FISHER-YATES SHUFFLE ---
 function shuffleArray(array) {
     for (let i = array.length - 1; i > 0; i--) {
         const j = Math.floor(Math.random() * (i + 1));
@@ -50,7 +51,8 @@ function createNewGameState(adminId, adminName) {
         timer_seconds: 0,
         is_timer_running: false,
         chat_messages: [], 
-        activity_log: []   
+        activity_log: [],
+        destroyTimer: null // NEW: Timer for delayed room deletion
     };
 }
 
@@ -119,7 +121,6 @@ function finalizeAndMoveOn(roomCode) {
         addSystemLog(room, `${player.name}: ${resultMsg}`);
         io.to(roomCode).emit('state_update', room);
 
-        // AUTO-MOVE NEXT (5 Second Delay)
         setTimeout(() => {
             const r = ROOMS[roomCode];
             if (!r) return;
@@ -133,16 +134,15 @@ function finalizeAndMoveOn(roomCode) {
 
             if (r.current_player_index < r.players.length) {
                 io.to(roomCode).emit('new_player_nominated', r);
-                startRoomTimer(roomCode); // <--- AUTO START TIMER FOR NEXT PLAYER
+                startRoomTimer(roomCode);
             } else {
                 io.to(roomCode).emit('state_update', r); 
             }
         }, 5000); 
     } else {
-        // FIRST PLAYER START
         room.current_player_index++;
         io.to(roomCode).emit('new_player_nominated', room);
-        startRoomTimer(roomCode); // <--- AUTO START TIMER FOR FIRST PLAYER
+        startRoomTimer(roomCode);
     }
 }
 
@@ -200,6 +200,13 @@ io.on('connection', (socket) => {
         const roomCode = code.toUpperCase();
         const room = ROOMS[roomCode];
         if (!room) return socket.emit('error_msg', "Invalid Room Code");
+
+        // CANCEL DESTRUCTION IF SOMEONE JOINS
+        if (room.destroyTimer) {
+            console.log(`Re-activation! Deletion cancelled for ${roomCode}`);
+            clearTimeout(room.destroyTimer);
+            room.destroyTimer = null;
+        }
         
         const existingUserKey = Object.keys(room.users).find(key => room.users[key].name.toLowerCase() === userName.toLowerCase());
         if (existingUserKey) {
@@ -254,7 +261,6 @@ io.on('connection', (socket) => {
         };
         room.chat_messages.push(msg);
         if(room.chat_messages.length > 50) room.chat_messages.shift();
-        
         io.to(room.code).emit('chat_update', msg);
     });
 
@@ -272,15 +278,19 @@ io.on('connection', (socket) => {
             io.to(room.code).emit('state_update', room);
         }
     });
-    
-    // Kept for internal logic, but not called from UI
     socket.on('admin_start_timer', () => {
         const room = ROOMS[socket.roomCode];
         if (room?.users[socket.id]?.is_admin) startRoomTimer(room.code);
     });
-    
+    socket.on('admin_stop_timer', () => {
+        const room = ROOMS[socket.roomCode];
+        if (room?.users[socket.id]?.is_admin) {
+            clearInterval(ROOM_TIMERS[room.code]);
+            room.is_timer_running = false;
+            io.to(room.code).emit('state_update', room);
+        }
+    });
     socket.on('admin_move_on', () => finalizeAndMoveOn(socket.roomCode));
-    
     socket.on('admin_kick_user', (targetUserId) => {
         const room = ROOMS[socket.roomCode];
         if (!room || !room.users[socket.id]?.is_admin || targetUserId === socket.id) return;
@@ -305,7 +315,6 @@ io.on('connection', (socket) => {
         if (room.users[socket.id]) room.users[socket.id].is_interested = isInterested;
         checkAutoSellCondition(room);
     });
-
     socket.on('place_bid', () => {
         const room = ROOMS[socket.roomCode];
         if (!room) return;
@@ -318,7 +327,6 @@ io.on('connection', (socket) => {
         if (room.current_top_bidder === socket.id) return socket.emit('error_msg', "You hold the highest bid!");
 
         const nextBid = getNextMinBid(room.current_bid, player.base_price);
-        
         if (team.purse < nextBid) return socket.emit('error_msg', "Insufficient Funds");
         if (team.players.length >= room.settings.max_squad) return socket.emit('error_msg', `Squad Limit Reached (${room.settings.max_squad})`);
         if (player.nationality === 'Overseas' && team.overseas_count >= MAX_OVERSEAS) return socket.emit('error_msg', `Overseas Limit Reached (${MAX_OVERSEAS})`);
@@ -345,18 +353,19 @@ io.on('connection', (socket) => {
 
         user.connected = false;
 
-        if (room.status === 'LOBBY') {
-            if (user.team_id && room.teams[socket.id]) delete room.teams[socket.id];
-            delete room.users[socket.id];
-        }
+        // Auto-Promote Admin if they left
         if (user.is_admin) {
             const remainingUsers = Object.values(room.users).filter(u => u.connected);
             if (remainingUsers.length > 0) {
                 remainingUsers[0].is_admin = true;
                 io.to(roomCode).emit('error_msg', `Admin left. ${remainingUsers[0].name} is now Admin.`);
             } else {
-                delete ROOMS[roomCode];
-                if (ROOM_TIMERS[roomCode]) clearInterval(ROOM_TIMERS[roomCode]);
+                // If NO ONE is left, start the "Self Destruct" timer (2 Minutes)
+                console.log(`Room ${roomCode} empty. Deleting in 2 mins...`);
+                room.destroyTimer = setTimeout(() => {
+                    delete ROOMS[roomCode];
+                    if (ROOM_TIMERS[roomCode]) clearInterval(ROOM_TIMERS[roomCode]);
+                }, 120000); // 120 Seconds grace period
                 return;
             }
         }
