@@ -35,7 +35,7 @@
     <script type="text/babel">
         const socket = io();
         const formatCurrency = (val) => val >= 10000000 ? `₹${(val/10000000).toFixed(2)} Cr` : (val > 0 ? `₹${(val/100000).toFixed(2)} L` : '-');
-        const IPL_LOGO_URL = "https://upload.wikimedia.org/wikipedia/en/8/84/Indian_Premier_League_Official_Logo.svg"; // Official Logo
+        const IPL_LOGO_URL = "https://upload.wikimedia.org/wikipedia/en/8/84/Indian_Premier_League_Official_Logo.svg";
 
         const TEAM_LOGOS = {
             'CSK': 'https://upload.wikimedia.org/wikipedia/en/thumb/2/2b/Chennai_Super_Kings_Logo.svg/300px-Chennai_Super_Kings_Logo.svg.png',
@@ -97,26 +97,53 @@
             );
         };
 
-        const UserListModal = ({ users, onClose, onKick, onTransfer }) => (
-            <div className="fixed inset-0 bg-black/80 z-[100] flex items-center justify-center p-4">
-                <div className="bg-slate-900 border border-slate-700 w-full max-w-md rounded-xl p-6 shadow-2xl">
-                    <div className="flex justify-between items-center mb-6"><h3 className="text-xl font-bold text-ipl-gold">MANAGE PARTICIPANTS</h3><button onClick={onClose} className="text-gray-400 hover:text-white">✕</button></div>
-                    <div className="space-y-3 max-h-96 overflow-y-auto">
-                        {Object.values(users).map(user => (
-                            <div key={user.id} className="flex justify-between items-center bg-slate-800 p-3 rounded border border-slate-700">
-                                <div><p className="font-bold">{user.name} {user.id === socket.id && '(You)'}</p><p className="text-xs text-blue-400">{user.team_id || 'No Team'}</p></div>
-                                <div className="flex gap-2">
-                                    {!user.is_admin && (<><button onClick={() => onTransfer(user.id)} className="bg-blue-600/20 text-blue-400 hover:bg-blue-600 hover:text-white px-3 py-1 rounded text-xs font-bold border border-blue-600/50" title="Make Admin">👑 ADMIN</button><button onClick={() => onKick(user.id)} className="bg-red-600/20 text-red-500 hover:bg-red-600 hover:text-white px-3 py-1 rounded text-xs font-bold border border-red-600/50">❌</button></>)}
-                                    {user.is_admin && <span className="text-xs bg-green-900 text-green-400 px-2 py-1 rounded border border-green-700">HOST</span>}
+        // --- UPDATED: UserListModal with Confirmation ---
+        const UserListModal = ({ users, onClose, onKick, onTransfer }) => {
+            const [confirmAction, setConfirmAction] = React.useState(null); // 'KICK' or 'TRANSFER'
+            const [targetId, setTargetId] = React.useState(null);
+
+            const handleAction = (action, id) => { setConfirmAction(action); setTargetId(id); };
+            const confirm = () => {
+                if (confirmAction === 'KICK') onKick(targetId);
+                if (confirmAction === 'TRANSFER') onTransfer(targetId);
+                cancel();
+            };
+            const cancel = () => { setConfirmAction(null); setTargetId(null); };
+            const targetName = targetId ? users[targetId]?.name : '';
+
+            return (
+                <div className="fixed inset-0 bg-black/80 z-[100] flex items-center justify-center p-4">
+                    <div className="bg-slate-900 border border-slate-700 w-full max-w-md rounded-xl p-6 shadow-2xl relative">
+                        {confirmAction && (
+                            <div className="absolute inset-0 bg-slate-900/95 z-10 flex flex-col items-center justify-center rounded-xl p-6 text-center animate-fade-in">
+                                <h3 className="text-xl font-bold text-white mb-2">{confirmAction === 'KICK' ? `Kick ${targetName}?` : `Make ${targetName} Admin?`}</h3>
+                                <p className="text-gray-400 text-sm mb-6">{confirmAction === 'KICK' ? "They will be removed from the room." : "You will lose your Admin privileges."}</p>
+                                <div className="flex gap-3 w-full">
+                                    <button onClick={cancel} className="flex-1 py-2 rounded-lg font-bold text-gray-300 border border-slate-600 hover:bg-slate-800">CANCEL</button>
+                                    <button onClick={confirm} className={`flex-1 py-2 rounded-lg font-bold text-white ${confirmAction === 'KICK' ? 'bg-red-600 hover:bg-red-700' : 'bg-blue-600 hover:bg-blue-700'}`}>CONFIRM</button>
                                 </div>
                             </div>
-                        ))}
+                        )}
+                        <div className="flex justify-between items-center mb-6"><h3 className="text-xl font-bold text-ipl-gold">MANAGE PARTICIPANTS</h3><button onClick={onClose} className="text-gray-400 hover:text-white">✕</button></div>
+                        <div className="space-y-3 max-h-96 overflow-y-auto">
+                            {Object.values(users).map(user => (
+                                <div key={user.id} className="flex justify-between items-center bg-slate-800 p-3 rounded border border-slate-700">
+                                    <div><p className="font-bold">{user.name} {user.id === socket.id && '(You)'}</p><p className="text-xs text-blue-400">{user.team_id || 'No Team'}</p></div>
+                                    <div className="flex gap-2">
+                                        {!user.is_admin && (
+                                            <><button onClick={() => handleAction('TRANSFER', user.id)} className="bg-blue-600/20 text-blue-400 hover:bg-blue-600 hover:text-white px-3 py-1 rounded text-xs font-bold border border-blue-600/50 transition-colors" title="Make Admin">👑 ADMIN</button>
+                                            <button onClick={() => handleAction('KICK', user.id)} className="bg-red-600/20 text-red-500 hover:bg-red-600 hover:text-white px-3 py-1 rounded text-xs font-bold border border-red-600/50 transition-colors">❌</button></>
+                                        )}
+                                        {user.is_admin && <span className="text-xs bg-green-900 text-green-400 px-2 py-1 rounded border border-green-700">HOST</span>}
+                                    </div>
+                                </div>
+                            ))}
+                        </div>
                     </div>
                 </div>
-            </div>
-        );
+            );
+        };
 
-        // --- NEW: Leave Confirmation Modal ---
         const LeaveModal = ({ onConfirm, onCancel }) => (
             <div className="fixed inset-0 bg-black/90 z-[110] flex items-center justify-center p-4 animate-fade-in">
                 <div className="bg-slate-800 border border-slate-600 w-full max-w-sm rounded-2xl p-6 shadow-2xl text-center">
@@ -311,7 +338,6 @@
             const [copied, setCopied] = React.useState(false);
             const [lastSold, setLastSold] = React.useState(null); 
             
-            // --- NEW: State for Mobile Chat Toggle ---
             const [showMobileChat, setShowMobileChat] = React.useState(false); 
             const [unreadCount, setUnreadCount] = React.useState(0);
 
@@ -461,8 +487,8 @@
                     <div className="min-h-screen bg-slate-900 text-white p-8">
                         {/* HEADER WITH LOGO/LEAVE */}
                         <div className="absolute top-4 left-4 z-50">
-                            <button onClick={handleLeave} className="hover:scale-110 transition-transform" title="Leave Auction">
-                                <img src={IPL_LOGO_URL} alt="IPL" className="h-12 w-auto drop-shadow-lg" />
+                            <button onClick={handleLeave} className="hover:scale-110 transition-transform bg-white/10 p-2 rounded-lg backdrop-blur-md border border-white/20" title="Leave Auction">
+                                <span className="font-bold text-red-500 text-sm">EXIT ROOM</span>
                             </button>
                         </div>
 
@@ -498,8 +524,8 @@
                     <header className="glass-panel p-3 flex justify-between items-center z-50 gap-2">
                         <div className="flex items-center gap-4 w-full md:w-auto">
                             {/* LOGO BUTTON (LEAVE) */}
-                            <button onClick={handleLeave} className="hover:scale-110 transition-transform mr-2" title="Leave Auction">
-                                <img src={IPL_LOGO_URL} alt="IPL" className="h-10 w-auto" />
+                            <button onClick={handleLeave} className="hover:scale-110 transition-transform mr-2 bg-red-600/20 border border-red-600/50 px-3 py-1 rounded text-xs font-bold text-red-400" title="Leave Auction">
+                                EXIT
                             </button>
 
                             <TeamLogo teamId={myTeam.name} size="h-12 w-12" />
