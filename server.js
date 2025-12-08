@@ -37,10 +37,10 @@ function createNewGameState(adminId, adminName) {
 
     return {
         code: null,
-        status: 'LOBBY',
+        status: 'LOBBY', 
         settings: { min_squad: 18, max_squad: 25, default_timer: DEFAULT_TIMER_DURATION },
         users: { 
-            [adminId]: { id: adminId, name: adminName, is_admin: true, team_id: null, is_interested: true } 
+            [adminId]: { id: adminId, name: adminName, is_admin: true, team_id: null, is_interested: true, connected: true } 
         },
         teams: {},
         players: sortedList,
@@ -50,7 +50,9 @@ function createNewGameState(adminId, adminName) {
         current_top_bidder_team: null,
         timer_duration: DEFAULT_TIMER_DURATION,
         timer_seconds: 0,
-        is_timer_running: false
+        is_timer_running: false,
+        chat_messages: [], 
+        activity_log: []   
     };
 }
 
@@ -72,9 +74,16 @@ function resetInterest(room) {
     Object.keys(room.users).forEach(uid => { room.users[uid].is_interested = true; });
 }
 
+function addSystemLog(room, message) {
+    const logEntry = { type: 'system', text: message, timestamp: new Date().toISOString() };
+    room.activity_log.push(logEntry);
+    if (room.activity_log.length > 50) room.activity_log.shift();
+    io.to(room.code).emit('log_update', logEntry);
+}
+
 function finalizeAndMoveOn(roomCode) {
     const room = ROOMS[roomCode];
-    if (!room) return;
+    if (!room || room.status === 'SOLD_PAUSE') return;
 
     clearInterval(ROOM_TIMERS[roomCode]);
     room.is_timer_running = false;
@@ -84,6 +93,9 @@ function finalizeAndMoveOn(roomCode) {
         const player = room.players[room.current_player_index];
         const winnerSocketId = room.current_top_bidder;
 
+        room.status = 'SOLD_PAUSE';
+
+        let resultMsg = "";
         if (winnerSocketId && room.teams[winnerSocketId]) {
             const winnerTeam = room.teams[winnerSocketId];
             winnerTeam.purse -= room.current_bid;
@@ -93,28 +105,44 @@ function finalizeAndMoveOn(roomCode) {
             player.status = 'SOLD';
             player.sold_price = room.current_bid;
             player.sold_to = winnerTeam.name;
+            
+            resultMsg = `SOLD to ${winnerTeam.name} for ₹${(room.current_bid/10000000).toFixed(2)} Cr`;
             io.to(roomCode).emit('player_sold', { winner: winnerTeam.name, amount: room.current_bid });
         } else {
             player.status = 'UNSOLD';
+            resultMsg = `UNSOLD`;
             io.to(roomCode).emit('player_sold', { winner: 'UNSOLD', amount: 0 });
         }
-    }
+        
+        addSystemLog(room, `${player.name}: ${resultMsg}`);
+        io.to(roomCode).emit('state_update', room);
 
-    room.current_player_index++;
-    room.current_bid = 0;
-    room.current_top_bidder = null;
-    room.current_top_bidder_team = null;
-    resetInterest(room);
+        setTimeout(() => {
+            const r = ROOMS[roomCode];
+            if (!r) return;
 
-    if (room.current_player_index < room.players.length) {
-        io.to(roomCode).emit('new_player_nominated', room);
+            r.status = 'AUCTION';
+            r.current_player_index++;
+            r.current_bid = 0;
+            r.current_top_bidder = null;
+            r.current_top_bidder_team = null;
+            resetInterest(r);
+
+            if (r.current_player_index < r.players.length) {
+                io.to(roomCode).emit('new_player_nominated', r);
+            } else {
+                io.to(roomCode).emit('state_update', r); 
+            }
+        }, 5000); 
     } else {
-        io.to(roomCode).emit('state_update', room); 
+        room.current_player_index++;
+        io.to(roomCode).emit('new_player_nominated', room);
     }
 }
 
 function checkAutoSellCondition(room) {
-    const activeTeams = Object.values(room.users).filter(u => u.team_id !== null);
+    if (room.status === 'SOLD_PAUSE') return;
+    const activeTeams = Object.values(room.users).filter(u => u.team_id !== null && u.connected); // Check connected only
     if (activeTeams.length < 2) return; 
 
     const winnerId = room.current_top_bidder;
@@ -127,7 +155,7 @@ function checkAutoSellCondition(room) {
             const currentWinner = room.current_top_bidder;
             if(winnerId !== currentWinner) return; 
             const reCheckOpponents = Object.values(room.users)
-                .filter(u => u.team_id !== null && u.id !== currentWinner);
+                .filter(u => u.team_id !== null && u.id !== currentWinner && u.connected);
             if(reCheckOpponents.every(u => u.is_interested === false)) {
                 finalizeAndMoveOn(room.code);
             }
@@ -162,24 +190,69 @@ io.on('connection', (socket) => {
         socket.emit('room_joined', { code, is_admin: true, state: ROOMS[code] });
     });
 
+    // --- SMART JOIN (RECONNECT LOGIC) ---
     socket.on('join_room', ({ code, userName }) => {
         const roomCode = code.toUpperCase();
         const room = ROOMS[roomCode];
-        if (!room) return socket.emit('error_msg', "Invalid Room Code");
-        if (room.status !== 'LOBBY') return socket.emit('error_msg', "Auction already started!");
         
-        room.users[socket.id] = { id: socket.id, name: userName, is_admin: false, team_id: null, is_interested: true };
+        if (!room) return socket.emit('error_msg', "Invalid Room Code");
+
+        // CHECK: DOES THIS USER ALREADY EXIST? (Case Insensitive)
+        const existingUserKey = Object.keys(room.users).find(key => 
+            room.users[key].name.toLowerCase() === userName.toLowerCase()
+        );
+
+        if (existingUserKey) {
+            // --- RECONNECTION LOGIC ---
+            console.log(`♻️ User ${userName} reconnected. Swapping ${existingUserKey} -> ${socket.id}`);
+            
+            // 1. Copy old data
+            const oldUserData = room.users[existingUserKey];
+            
+            // 2. Create new user entry with old data but NEW ID
+            room.users[socket.id] = {
+                ...oldUserData,
+                id: socket.id,
+                connected: true
+            };
+
+            // 3. Update Team Ownership if they had a team
+            if (oldUserData.team_id) {
+                const team = Object.values(room.teams).find(t => t.id === existingUserKey);
+                if (team) {
+                    delete room.teams[existingUserKey]; // Remove old key
+                    team.id = socket.id; // Update owner ID
+                    room.teams[socket.id] = team; // Add new key
+                }
+            }
+
+            // 4. Update Auction State if they were top bidder
+            if (room.current_top_bidder === existingUserKey) {
+                room.current_top_bidder = socket.id;
+            }
+
+            // 5. Delete old user entry (prevent duplicates)
+            delete room.users[existingUserKey];
+
+        } else {
+            // --- NEW USER JOIN ---
+            if (room.status !== 'LOBBY') return socket.emit('error_msg', "Auction started! Cannot join as new player.");
+            room.users[socket.id] = { id: socket.id, name: userName, is_admin: false, team_id: null, is_interested: true, connected: true };
+        }
+
         socket.join(roomCode);
         socket.roomCode = roomCode;
         io.to(roomCode).emit('state_update', room);
-        socket.emit('room_joined', { code: roomCode, is_admin: false, state: room });
+        socket.emit('room_joined', { code: roomCode, is_admin: room.users[socket.id].is_admin, state: room });
     });
 
     socket.on('claim_team', (teamId) => {
         const room = ROOMS[socket.roomCode];
-        if (!room || room.status !== 'LOBBY') return;
-        const isTaken = Object.values(room.users).some(u => u.team_id === teamId);
-        if(isTaken) return socket.emit('error_msg', "Team already taken!");
+        if (!room) return;
+        
+        // Prevent claiming if taken (unless it's the same user reclaiming)
+        const existingOwner = Object.values(room.users).find(u => u.team_id === teamId);
+        if(existingOwner && existingOwner.id !== socket.id) return socket.emit('error_msg', "Team already taken!");
         
         room.users[socket.id].team_id = teamId;
         room.teams[socket.id] = { 
@@ -193,45 +266,33 @@ io.on('connection', (socket) => {
         io.to(room.code).emit('state_update', room);
     });
 
+    // --- CHAT LOGIC ---
+    socket.on('send_chat_message', (text) => {
+        const room = ROOMS[socket.roomCode];
+        const user = room?.users[socket.id];
+        if (!room || !user) return;
+
+        const msg = { 
+            id: Date.now(), 
+            user: user.name, 
+            team: user.team_id || 'Spec', 
+            text: text, 
+            time: new Date().toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'}) 
+        };
+        room.chat_messages.push(msg);
+        if(room.chat_messages.length > 50) room.chat_messages.shift();
+        
+        io.to(room.code).emit('chat_update', msg);
+    });
+
+    // ... (Admin Actions) ...
     socket.on('admin_update_settings', (newSettings) => {
         const room = ROOMS[socket.roomCode];
         if (!room || !room.users[socket.id]?.is_admin) return;
         room.settings = { ...room.settings, ...newSettings };
         room.timer_duration = newSettings.default_timer; 
         io.to(room.code).emit('state_update', room);
-        io.to(room.code).emit('error_msg', "Settings Updated!");
     });
-
-    // --- NEW: MANUAL ADMIN TRANSFER ---
-    socket.on('admin_transfer_role', (targetUserId) => {
-        const room = ROOMS[socket.roomCode];
-        if (!room || !room.users[socket.id]?.is_admin) return;
-        if (!room.users[targetUserId]) return;
-
-        // Swap roles
-        room.users[socket.id].is_admin = false;
-        room.users[targetUserId].is_admin = true;
-
-        io.to(room.code).emit('state_update', room);
-        io.to(room.code).emit('error_msg', `Admin transferred to ${room.users[targetUserId].name}`);
-    });
-
-    // --- NEW: ADMIN KICK USER ---
-    socket.on('admin_kick_user', (targetUserId) => {
-        const room = ROOMS[socket.roomCode];
-        if (!room || !room.users[socket.id]?.is_admin || targetUserId === socket.id) return;
-
-        // Notify and cleanup
-        io.to(targetUserId).emit('kicked_from_room');
-        if (room.teams[targetUserId]) delete room.teams[targetUserId];
-        if (room.users[targetUserId]) delete room.users[targetUserId];
-        
-        const targetSocket = io.sockets.sockets.get(targetUserId);
-        if (targetSocket) targetSocket.leave(socket.roomCode);
-
-        io.to(socket.roomCode).emit('state_update', room);
-    });
-
     socket.on('admin_start_game', () => {
         const room = ROOMS[socket.roomCode];
         if (room && room.users[socket.id]?.is_admin) {
@@ -239,7 +300,6 @@ io.on('connection', (socket) => {
             io.to(room.code).emit('state_update', room);
         }
     });
-
     socket.on('admin_start_timer', () => {
         const room = ROOMS[socket.roomCode];
         if (room?.users[socket.id]?.is_admin) startRoomTimer(room.code);
@@ -253,7 +313,25 @@ io.on('connection', (socket) => {
         }
     });
     socket.on('admin_move_on', () => finalizeAndMoveOn(socket.roomCode));
-
+    
+    socket.on('admin_kick_user', (targetUserId) => {
+        const room = ROOMS[socket.roomCode];
+        if (!room || !room.users[socket.id]?.is_admin || targetUserId === socket.id) return;
+        io.to(targetUserId).emit('kicked_from_room');
+        if (room.teams[targetUserId]) delete room.teams[targetUserId];
+        if (room.users[targetUserId]) delete room.users[targetUserId];
+        const targetSocket = io.sockets.sockets.get(targetUserId);
+        if (targetSocket) targetSocket.leave(socket.roomCode);
+        io.to(socket.roomCode).emit('state_update', room);
+    });
+    socket.on('admin_transfer_role', (targetUserId) => {
+        const room = ROOMS[socket.roomCode];
+        if (!room || !room.users[socket.id]?.is_admin) return;
+        if (!room.users[targetUserId]) return;
+        room.users[socket.id].is_admin = false;
+        room.users[targetUserId].is_admin = true;
+        io.to(room.code).emit('state_update', room);
+    });
     socket.on('toggle_interest', (isInterested) => {
         const room = ROOMS[socket.roomCode];
         if (!room) return;
@@ -264,6 +342,8 @@ io.on('connection', (socket) => {
     socket.on('place_bid', () => {
         const room = ROOMS[socket.roomCode];
         if (!room) return;
+        if (room.status === 'SOLD_PAUSE') return socket.emit('error_msg', "Round Ended. Wait for next player.");
+
         const team = room.teams[socket.id];
         const player = room.players[room.current_player_index];
 
@@ -282,44 +362,33 @@ io.on('connection', (socket) => {
         room.timer_seconds = BID_RESET_TIMER; 
         resetInterest(room);
 
+        addSystemLog(room, `${team.name} bid ₹${(nextBid/100000).toFixed(0)}L`);
+
         io.to(room.code).emit('bid_update', { amount: nextBid, bidder_name: team.name });
         io.to(room.code).emit('timer_update', room.timer_seconds); 
     });
 
-    // --- CRITICAL FIX: DISCONNECT HANDLING ---
+    // --- DISCONNECT HANDLING ---
     socket.on('disconnect', () => {
         const roomCode = socket.roomCode;
         if (!roomCode || !ROOMS[roomCode]) return;
-
         const room = ROOMS[roomCode];
         const user = room.users[socket.id];
         if (!user) return;
 
-        // 1. If in LOBBY, remove user completely (Fixes "Team Taken" issue)
-        if (room.status === 'LOBBY') {
-            if (user.team_id && room.teams[socket.id]) {
-                delete room.teams[socket.id]; // Free up the team
-            }
-            delete room.users[socket.id];
-        }
+        // Mark as disconnected but DON'T delete yet
+        user.connected = false;
 
-        // 2. AUTO-ADMIN SUCCESSION
-        // If the disconnected user was Admin, promote the next available user
+        // Auto-Promote Admin if they left
         if (user.is_admin) {
-            const remainingUsers = Object.values(room.users);
+            const remainingUsers = Object.values(room.users).filter(u => u.connected); // Only promote active users
             if (remainingUsers.length > 0) {
-                const newAdmin = remainingUsers[0]; // Pick the first person in list
-                newAdmin.is_admin = true;
-                io.to(roomCode).emit('error_msg', `Admin left. ${newAdmin.name} is now Admin.`);
-            } else {
-                // Room is empty, delete it
-                delete ROOMS[roomCode];
-                if (ROOM_TIMERS[roomCode]) clearInterval(ROOM_TIMERS[roomCode]);
-                return;
+                remainingUsers[0].is_admin = true;
+                io.to(roomCode).emit('error_msg', `Admin left. ${remainingUsers[0].name} is now Admin.`);
             }
         }
-
-        // 3. Broadcast update
+        
+        // Broadcast update (so others see they are gone, maybe grey them out in list)
         io.to(roomCode).emit('state_update', room);
     });
 });
